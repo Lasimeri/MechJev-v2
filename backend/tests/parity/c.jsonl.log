@@ -1,0 +1,7 @@
+xks: site cuda
+xks: devices: CUDA0, CPU
+xks: loading Qwen3.8-35B-A3B-Q4_K_M.gguf (21.7 GB)
+xks: GPU layers: 21 of 41 (50%)
+resolve_fused_ops: layer 0 is assigned to device CPU but fused Gated Delta Net (chunked) is assigned to device CUDA0 (usually due to missing support)
+resolve_fused_ops: fused Gated Delta Net (chunked) not supported, set to disabled
+xks listening on http://127.0.0.1:8091  (subject artichoke/Qwen3.8-35B-A3B-Q4_K_M)

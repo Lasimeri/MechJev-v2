@@ -1,3 +1,4 @@
 /backend/build/
 /frontend/target/
 *.local.conf
+/backend/tests/parity/*.cmp

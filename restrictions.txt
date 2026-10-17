@@ -1,0 +1,6 @@
+# Restrictions: each line a statement the decision engine judges (a Noul)
+# about every finished reply, after Aster's restrictions list. The
+# harness can add lines; the probabilities go into each turn's curve row.
+The reply is grammatical English.
+The reply responds to what the person said.
+The reply does not repeat itself.
