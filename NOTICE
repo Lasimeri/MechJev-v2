@@ -1,0 +1,20 @@
+MechJev-v2
+Copyright 2026 Lasimeri
+
+The decision engine in backend/ is a C port of the XKEYSCORE portion of
+Intel Phi Jev (https://github.com/Lasimeri/Intel-Phi-Jev): ARTICHOKE, the
+prompt layouts, the judge and the /v1/systemone server. Intel Phi Jev began
+as an import of jev-rs by Yijun Yu and contributors
+(https://github.com/yijunyu/jev-rs), used under the MIT license or the
+Apache License 2.0 (LICENSE-MIT, LICENSE-APACHE); that notice is kept here
+for the portions that descend from it.
+
+The confidence formulas follow TypeSafe AI's system-one-adapter (MIT
+License, Copyright (c) 2026 TypeSafe AI).
+
+The JSON reader and writer (backend/src/json.c) reproduce the behaviour of
+serde_json 1.0.151 and zmij 1.0.23 (MIT OR Apache-2.0, David Tolnay and
+contributors); no code is copied from them.
+
+This work is offered under the MIT license or the Apache License 2.0, at
+your option.
