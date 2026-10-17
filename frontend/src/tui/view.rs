@@ -1056,6 +1056,18 @@ fn talk(f: &mut Frame, a: &mut App) {
             },
         ));
         sidep.push(vec![]);
+        if !a.talk.probes.is_empty() {
+            let t = a.talk.probes[0]["turns"].as_u64().unwrap_or(0);
+            sidep.push(rule(0, &format!("alone, after {t} turns"), side - 1, true));
+            for r in &a.talk.probes {
+                let q = r["probe"].as_str().unwrap_or("");
+                let reply = r["reply"].as_str().filter(|s| !s.is_empty()).unwrap_or("(no words)");
+                let mark = if r["failed_requirement"].as_bool() == Some(true) { "✗" } else { "✓" };
+                sidep.push(vec![faint(clip(q, side.saturating_sub(2)))]);
+                sidep.push(vec![dim(format!(" {mark} ")), text(clip(reply, side.saturating_sub(5)))]);
+            }
+            sidep.push(vec![]);
+        }
         sidep.push(rule(0, "agreement, turn by turn", side - 1, true));
         let n = a.talk.turns.len();
         for t in &a.talk.turns[n.saturating_sub(10)..] {

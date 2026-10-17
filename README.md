@@ -194,8 +194,20 @@ Every number comes with the command or file that produced it.
   "Hello! Are you happy today?" with "Yes, hello." (every requirement
   passed, coherence 0.45).
 
-Fixed probes asked of the circuit alone after each block of conversation
-are the acquisition curve; the results are recorded here as they come.
+**The acquisition curve** is `learner probe` (`mjev2 probe`, the MCP
+`probe` tool): the questions in `probes.txt` put to the circuit alone, each
+from an empty conversation. The learner hears, learns and counts nothing,
+so a probe changes nothing it measures. The rows go to `probes.jsonl`.
+
+| after | Hello! Are you happy today? | Do you like music? | What is your name? | Thank you for talking with me. |
+| --- | --- | --- | --- | --- |
+| 49 turns | Yes. I am (0.76, passed) | Yes. (0.83, passed) | Hello. I do (0.49, failed) | Yes. (0.73, passed) |
+
+(coherence, requirements). Before the probe instrument, the same questions
+put through the conversation (heard and counted) got word salad from the
+circuit alone ("Yes? Too music? Do, asking! Today. I too. Too."). It has
+since learned to stop after a sentence. It still says "Yes." where "Yes."
+is not an answer.
 
 
 ## Not done yet

@@ -32,3 +32,7 @@ The engine perceives (the variables) and judges (requirements, coherence),
 but chooses no word, and nothing is learned. Such turns are marked `solo`.
 First one, 2026-10-17: "Hello! Are you happy today?" got "Yes, hello."
 (every requirement passed, coherence 0.45, 3 s a word).
+
+The side panel also shows the last probe (`probes.jsonl`): each fixed
+question with what the circuit alone answered, ✓ or ✗ for the
+requirements, and the turns the learner had had.

@@ -35,6 +35,10 @@ pub struct Talk {
     pub alone: bool,
     /// The last turns' records, oldest first.
     pub turns: Vec<Value>,
+    /// The last probe's rows (probes.jsonl): the circuit alone on the fixed
+    /// questions.
+    pub probes: Vec<Value>,
+    probes_len: u64,
     /// The reply so far of a turn in progress.
     pub speaking: Option<String>,
     /// Rows scrolled up from the bottom of the conversation.
@@ -49,6 +53,8 @@ impl Default for Talk {
             input: Editor::new(true),
             alone: false,
             turns: Vec::new(),
+            probes: Vec::new(),
+            probes_len: u64::MAX,
             speaking: None,
             back: 0,
             turns_len: u64::MAX,
@@ -75,6 +81,16 @@ impl Talk {
                 .iter()
                 .filter_map(|l| serde_json::from_str(l).ok())
                 .collect();
+            changed = true;
+        }
+        let plen = std::fs::metadata(dir.join("probes.jsonl")).map_or(0, |m| m.len());
+        if plen != self.probes_len {
+            self.probes_len = plen;
+            let text = std::fs::read_to_string(dir.join("probes.jsonl")).unwrap_or_default();
+            let rows: Vec<Value> = text.lines().filter_map(|l| serde_json::from_str(l).ok()).collect();
+            // the last probe: the rows sharing the newest time stamp
+            let last = rows.last().map(|r| r["time"].clone());
+            self.probes = rows.into_iter().filter(|r| Some(&r["time"]) == last.as_ref()).collect();
             changed = true;
         }
         let speaking = std::fs::read_to_string(dir.join("speaking.txt")).ok();
