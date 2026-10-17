@@ -166,10 +166,10 @@ Every number comes with the command or file that produced it.
 | Jev's 28 published questions (Mechanical Jev's `make closeness`) | 27 of 28 of Jev's decisions, mean difference 0.118. Today's Rust xks gives the same rows (difference 0.0); its 28 of 28 dates from September, on an older llama.cpp and site | `backend/tests/parity/closeness-*.jsonl` |
 | JSON against serde_json 1.0.151 | byte-identical on 8 cases and 20,000 generated numbers | `make check`, `backend/tests/gen_numbers.c` |
 | the circuit's 16 gates | equal their truth tables | `backend/tests/learner_test.c` |
-| grounding toy: the right word depends on one variable only (60 examples, 8 seeds, 6,000 passes each; mean, min to max) | held-out agreement 0.912 (0.825 to 0.950); with the variable blanked 0.553 (0.525 to 0.575, chance 0.5); with the word before blanked 0.881 (0.725 to 0.950). One seed trained twice: identical circuits | `backend/tests/learner_test.c` |
-| relaxed against discrete circuit | the same word on 0.981 of held-out inputs (0.900 to 1.000 over the 8 seeds) | `backend/tests/learner_test.c` |
+| grounding toy: the right word depends on one variable only (60 examples, 8 seeds, 6,000 passes each; mean, min to max) | held-out agreement 0.906 (0.800 to 0.925); with the variable blanked 0.544 (0.525 to 0.550, chance 0.5); with the word before blanked 0.919 (0.850 to 0.950), with half the training passes blanking the word before (input dropout). One seed trained twice: identical circuits | `backend/tests/learner_test.c` |
+| relaxed against discrete circuit | the same word on 0.981 of held-out inputs (0.875 to 1.000 over the 8 seeds) | `backend/tests/learner_test.c` |
 | the exported C circuit, compiled | identical to the interpreter on 200 inputs | `backend/tests/learner_test.c` |
-| per-token scoring (RED): one context, the engine weakly preferring the wrong word (0.4 to 0.3), 8 seeds | the right word first among the shown: 0.200 (0.025 to 0.500) with the KL alone, 0.887 (0.725 to 1.000) with the per-token reward | `backend/tests/learner_test.c` |
+| per-token scoring (RED): one context, the engine weakly preferring the wrong word (0.4 to 0.3), 8 seeds | the right word first among the shown: 0.172 (0.000 to 0.400) with the KL alone, 0.803 (0.450 to 0.925) with the per-token reward | `backend/tests/learner_test.c` |
 | a word's step on the engine (rerank in 3 rotations, 5 step variables, coherence; 3 interleaved pairs) | 7.2 to 10.2 s unpadded; 5.4 to 5.5 s padded (`pad_equal`); 2.0 s padded at ubatch 2048 | `backend/src/engine.md` |
 | a word of a reply, live (35B at 50% on the GPU) | 16 to 25 s a word before the padding; 4 to 5 s after | `turns.jsonl` |
 

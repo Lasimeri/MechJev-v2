@@ -19,6 +19,7 @@ static const int LAYERS[] = {256, 256, OUT_BITS};
 #define LR 0.01f       /* Adam, constant, as the paper trains */
 #define CE_WEIGHT 0.5f /* the engine's choice against the whole speakable lexicon */
 #define RL_WEIGHT 1.0f /* the per-token reward term (RED), against the KL term's 1 */
+#define PREV_DROPOUT 0.5 /* passes trained with the word before blanked */
 #define TERN 0.33f     /* latent embedding to ternary: above +TERN 1, below -TERN -1 */
 
 static const unsigned POS_AT[POS_BITS] = {1, 2, 3, 5, 8, 12, 20, 30};
@@ -302,7 +303,14 @@ static void train_one(learner_t *l, const example_t *ex, uint64_t seed, trace_t 
                       float *gs, float *ge)
 {
     uint8_t bits[N_IN];
-    learner_inputs(l, ex->vars, ex->prev, ex->pos, seed, ABL_NONE, bits);
+    /* The word before blanked for PREV_DROPOUT of the passes (input dropout,
+     * drawn from the pass's seed): the circuit must carry the reply through
+     * the concepts, not only the previous word (measured 2026-10-17 before
+     * this: agreement 0.86, 0.71 with the variables blanked, 0.14 with the
+     * word before blanked, the user's no-Markov rule at risk). */
+    uint64_t ds = seed ^ 0xD20F0u;
+    ablation_t drop = (double)(splitmix64(&ds) >> 11) * 0x1.0p-53 < PREV_DROPOUT ? ABL_PREV : ABL_NONE;
+    learner_inputs(l, ex->vars, ex->prev, ex->pos, seed, drop, bits);
     for (int i = 0; i < N_IN; i++)
         t->act[0][i] = bits[i];
     circuit_forward(&l->circ, t);

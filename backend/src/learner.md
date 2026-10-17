@@ -107,3 +107,17 @@ Here:
 The store is now version 3 (each example has the word said and its
 reward). A version 2 store is read with the said word set to the engine's
 choice and no reward.
+
+## Input dropout on the word before
+
+Half of the training passes blank the previous word's code (drawn from
+each pass's seed, so a seed still trains the same circuit). The live
+learner leaned on it: on 2026-10-17 its agreement with the engine was 0.86,
+0.71 with the variables blanked and 0.14 with the word before blanked. That
+is a chain over words, against the user's rule.
+
+With the dropout, `learner_test` (8 seeds):
+- grounding 0.906 (was 0.912);
+- with the variable blanked 0.544 (0.553);
+- with the word before blanked 0.919 (0.881);
+- per-token reward A/B 0.172 against 0.803 (0.200 against 0.887).
