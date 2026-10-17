@@ -216,3 +216,108 @@ conversation is the A/B's question.
 step before, about the reply one word shorter (the rerank asks them with
 its Choice, after the circuit has proposed). The record lets the rebuild
 try them as if asked first; live, that would cost a request per word.
+
+## Four input bits a variable
+
+Why the learner adapted slowly was not the rehearsal: the circuit could
+barely learn what a variable means. A word's score sums its ternary code
+over the 128 output bits, at 1/TAU each. With one input bit a variable,
+each variable reaches about 2 of those 128 bits through the random wiring,
+a quarter of a logit; the word before comes in on 32 bits. So the circuit
+leaned on the word before, and a new mapping from a variable did not take:
+three examples of "music" for a second variable were still at 0.000 after
+25,600 passes with 90% of them on the newest examples.
+
+`VAR_BITS` (a build constant, default 1) gives every variable that many
+input bits, each drawn from its probability with the turn's clock seed (the
+user's per-token seed rule holds for all of them). Measured in
+`learner_test three` (three words decided by two variables, in the live
+layout: 24 named variables, 22 of them at random middling probabilities; 8
+seeds a set; each seed's worst word):
+
+| input bits a variable | 1,000 passes | 4,000 passes |
+| --- | --- | --- |
+| 1 (seeds 400, 500, 600) | 0.475, 0.244, 0.606 | 0.644, 0.556, 0.688 |
+| 4 (the same seeds) | 0.713, 0.444, 0.656 | 0.775, 0.681, 0.750 |
+| 2 (seeds 400) | 0.456 | 0.606 |
+| 8 (seeds 400) | 0.637 | 0.625 |
+| 8, hidden layers 512 wide | 0.631 | 0.812 (60% slower) |
+| 8, unnamed slots read 0 | 0.662 | 0.719 |
+| 4, hidden layers 512 wide | 0.594 | 0.769 (60% slower) |
+| 4, unnamed slots read 0 | 0.625 | 0.656 |
+
+Four bits win on every seed set, most at 1,000 passes (faster learning),
+for no extra time: the cost is in the gates, not the inputs. Eight bits at
+this width wire badly (554 inputs for 512 wire ends: about 40% of inputs
+reach no gate). The test gates the mean over the three words at 4,000
+passes at the level the built encoding measured, less a margin (one bit
+0.794, gate 0.75; four bits 0.898, gate 0.85). Under four bits the
+grounding test rose from 0.906 to 0.941 (variable blanked 0.544 to 0.516,
+nearer chance: the variable carries it), the per-token reward test from
+0.803 to 0.872.
+
+**But four bits are not the default, because live they lost.** A circuit
+with four bits, retrained from the replay (`circuit-rebuild`, 1,497,413
+passes, as many as the live one had, then 374,353 on everything), against
+the live one-bit circuit:
+
+| | the last 10 taught turns held out (41 words): agree, variables blanked, word before blanked | the probe, both judging, interleaved |
+| --- | --- | --- |
+| live, one bit | 0.268, 0.268, 0.122 (as recorded, before each turn) | 15/24 (and 7, 7, 7, 8 of 12 before) |
+| retrained, four bits | 0.220, 0.220, 0.073 | 12/24 (and 6, 5 of 12 before) |
+
+The retrained circuit said "Yes." to almost everything. Neither circuit
+uses the variables on the real record (blanking them changes nothing),
+for the reason in the next section: on this record the variables do not
+decide the words. Four bits help where they do, which a better variable
+set may make true; until then the live circuit stays as it is.
+
+(A first run of that probe comparison was void: the old binary, copied
+outside the checkout, found no restrictions.txt and passed everything,
+24/24. The learner now warns when it loads no requirements, and the A/B
+tools pass the checkout's files to every binary.)
+
+Ruled out on the way, each by measurement: the unnamed slots' coin-flip
+bits (reading them 0 changed nothing), the learning rate (0.003 as poor as
+0.01), mini-batches of 100 (the paper's size, Petersen et al. 2022,
+Appendix A.1; at our pass budget too few steps), and initialization alone
+(residual initialization, Petersen et al. 2024, arXiv:2411.04732 section
+3.2, keeps the signal: the outputs' mean distance from 1/2 0.734 against
+0.105 under Gaussian, the first layer's gradient 1.03 of the last's against
+0.071; but at three layers and four bits it was not needed).
+
+A store whose circuit has one input bit a variable, read by a build with
+more (`-DVAR_BITS=4`), loads with everything it learned except the
+circuit, whose input layout differs: its bytes are read past, a new
+circuit is made and the learner warns. `learner circuit-rebuild [PASSES]`
+retrains it from the replay (by default as many passes as the old circuit
+had), first holding out the last 10 taught turns to compare the new circuit
+with what the old one measured on them.
+
+## What the variables carry
+
+A circuit can only learn from its variables what they say about the
+engine's words. Asked directly, over the 82 taught turns in turns.jsonl
+(leave one out, the 19 turn variables as a vector): the nearest turn's
+first word was the engine's first word 0.390 of the time, the nearest
+centroid's 0.366, and always guessing the most frequent first word ("Yes")
+0.500. The variables predict the first word worse than that guess.
+
+The plan Choice against the first word said:
+
+| plan | first words |
+| --- | --- |
+| agree | yes 9 of 11 |
+| greet back | hello 2 of 3 |
+| thank | thank 3 of 3 |
+| say goodbye | goodbye 4 of 9 |
+| answer a question (51 of 82 turns) | yes 28, i 9, hello 4, good 3, what 3, others 4 |
+
+Where the plan is specific, so is the word. "Answer a question" covers
+yes-or-no questions, "what" and "how" questions and "tell me" alike, and
+under it the engine said "Yes" to most of them; nothing in the variables
+tells those apart. Retrained from the replay with four input bits, the
+circuit measured on the last 10 taught turns (41 words) agreed 0.220 with
+every input and 0.220 with the variables blanked; the old circuit had
+measured 0.268 and 0.268 on the same turns. Neither uses the variables,
+because on this record they do not decide the words.

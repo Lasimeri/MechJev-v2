@@ -21,9 +21,14 @@
 
 #define LEARNER_VERSION 4u
 #define VAR_SLOTS 64 /* variable inputs; unused slots read 0.5 */
+#ifndef VAR_BITS
+#define VAR_BITS 1 /* input bits a variable, each drawn from its probability; 4 measured (learner.md) */
+#endif
+#define VAR_IN (VAR_SLOTS * VAR_BITS)
 #define CODE_IN 32   /* bits of the previous word's code fed in */
 #define POS_BITS 8   /* position thermometer: 1 2 3 5 8 12 20 30 */
-#define N_IN (VAR_SLOTS + CODE_IN + POS_BITS + 2)
+#define N_IN (VAR_IN + CODE_IN + POS_BITS + 2)
+#define N_IN_ONE_BIT (VAR_SLOTS + CODE_IN + POS_BITS + 2) /* the input width with one bit a variable */
 #define OUT_BITS 128
 #define TAU 8.0f /* GroupSum temperature (the paper's tau): scores within +-16 */
 #define MAX_OPTS 24
@@ -67,6 +72,8 @@ typedef struct {
     uint64_t turns, steps, trained, emb_t, next_id;
     hdmem_t mem;      /* the fast memory: contexts to words, no gradient (hdmem.h) */
     float mem_weight; /* its share of a word's score; 0: off (configuration, not stored) */
+    float recent_share; /* share of rehearsal passes drawn from the last RECENT_EXAMPLES (configuration) */
+    bool circuit_fresh; /* the circuit was made new at load (another input layout): learner circuit-rebuild */
 } learner_t;
 
 /* What one evaluation pass over examples measured. */
@@ -140,6 +147,9 @@ double learner_recall_agree(const learner_t *l, const hv_t *contexts, const int3
 /* How far the memory's first word is ahead of its second, in similarity
  * (NAN while it holds fewer than two words): what mem_weight scales. */
 double learner_recall_margin(const learner_t *l, const hv_t *context);
+/* The circuit made new (its wiring from the seed) and its training count
+ * zeroed: learner circuit-rebuild retrains it from the replay. */
+void learner_circuit_reset(learner_t *l);
 /* The memory emptied (the levels and identifiers stay: they are the seed's). */
 void learner_memory_reset(learner_t *l);
 

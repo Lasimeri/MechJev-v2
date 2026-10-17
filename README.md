@@ -239,9 +239,15 @@ is not an answer.
 - **Acquisition** is early (about 100 turns): before learning a turn, the
   circuit's first word is the engine's on 0.490 of the steps, against
   0.461 for the word most often said at that position. The fast memory
-  gets 0.403 (0.432 on words, level with both); whether it makes the
-  learner adapt faster is an A/B not run yet, so it does not speak by
-  default.
+  gets 0.403 (0.432 on words, level with both) and, speaking, cost probe
+  passes (10/24 against 15/24), so it learns but does not speak.
+- **The variables do not decide the words yet.** Over 82 taught turns
+  the turn variables predict the engine's first word worse than always
+  guessing "Yes" (0.390 nearest neighbour, against 0.500): "answer a
+  question" covers 51 of them, yes-or-no and "what" questions alike. Four
+  input bits a variable make a variable learnable (a three-word test from
+  0.794 to 0.898), but a circuit retrained so lost live (12/24 against
+  15/24), so the default stays one bit (`backend/src/learner.md`).
 - **Replies end at the first sentence.** In block 6, at 11 points where
   the reply could stop, it stopped 7 times: a one-word continuation is
   unfinished, so it never reads better as a whole than "Yes." does. That

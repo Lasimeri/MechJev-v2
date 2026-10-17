@@ -9,6 +9,7 @@
  * 3. the relaxed and discrete circuits agree on held-out inputs (the rate);
  * 4. the exported C circuit, compiled, is bit-identical to the interpreter.
  * 5. the fast memory (memory_tests).
+ * 6. three words on two variables, in the live layout (three_words).
  * The toy's words are English but the examples are artificial on purpose. */
 #define _GNU_SOURCE
 #include <stdbool.h>
@@ -112,6 +113,87 @@ static void spread(const char *what, const double *x, int n)
     }
     printf("%s %.3f  %.3f  %.3f\n", what, mean(x, n), lo, hi);
 }
+/* 6. Three words on two variables, in the live layout: 24 named variables
+ *    (two that decide: "greeted" -> hello, "music" -> music, neither ->
+ *    fine; 22 at random middling probabilities, as the engine's are) and
+ *    the unnamed slots. Measured over 8 seeds and printed with the spread
+ *    (gated at the level the built encoding measured). */
+static example_t three_example(learner_t *l, float greeted, float music, uint64_t id)
+{
+    example_t e;
+    memset(&e, 0, sizeof e);
+    uint64_t s = id * 0x9E3779B97F4A7C15ull;
+    for (int i = 0; i < VAR_SLOTS; i++)
+        e.vars[i] = i < 24 ? (float)(0.2 + 0.6 * ((splitmix64(&s) >> 11) * 0x1.0p-53)) : 0.5f;
+    e.vars[0] = greeted;
+    e.vars[1] = music;
+    e.prev = lex_find(l, START);
+    const char *w[3] = {"hello", "fine", "music"};
+    e.n = 3;
+    int32_t right = lex_find(l, music > 0.5f ? "music" : greeted > 0.5f ? "hello" : "fine");
+    for (int k = 0; k < 3; k++) {
+        e.opt[k] = lex_find(l, w[k]);
+        e.q[k] = e.opt[k] == right ? 0.9f : 0.05f;
+    }
+    e.top = right;
+    e.said = -1;
+    e.id = id;
+    return e;
+}
+
+#ifndef THREE_SEED0
+#define THREE_SEED0 400 /* the measure's first seed (a build can move it) */
+#endif
+
+static void three_words(void)
+{
+    enum { TS = 8, CHECKS = 2 };
+    const size_t at[CHECKS] = {1000, 4000};
+    double acc[CHECKS][3][TS];
+    for (int seed = 0; seed < TS; seed++) {
+        learner_t *l = toy_learner(THREE_SEED0 + (uint64_t)seed);
+        char name[32];
+        for (int i = 1; i < 24; i++) {
+            snprintf(name, sizeof name, "turn variable %d", i);
+            learner_slot(l, name);
+        }
+        example_t tr[201], held[3][20];
+        for (int i = 0; i < 201; i++)
+            tr[i] = three_example(l, i % 3 == 0 ? 0.95f : 0.05f, i % 3 == 2 ? 0.95f : 0.05f, 1000 + (uint64_t)i);
+        for (int i = 0; i < 20; i++) {
+            held[0][i] = three_example(l, 0.9f, 0.1f, 7000 + (uint64_t)i); /* hello */
+            held[1][i] = three_example(l, 0.1f, 0.1f, 7100 + (uint64_t)i); /* fine */
+            held[2][i] = three_example(l, 0.1f, 0.9f, 7200 + (uint64_t)i); /* music */
+        }
+        size_t done = 0;
+        for (int c = 0; c < CHECKS; c++) {
+            learner_learn(l, c ? NULL : tr, c ? 0 : 201, 1e9, at[c] - done);
+            done = at[c];
+            for (int w = 0; w < 3; w++)
+                acc[c][w][seed] = learner_eval(l, held[w], 20, ABL_NONE).agree;
+        }
+        learner_free(l);
+    }
+    for (int c = 0; c < CHECKS; c++) {
+        double worst[TS];
+        for (int seed = 0; seed < TS; seed++) {
+            worst[seed] = acc[c][0][seed];
+            for (int w = 1; w < 3; w++)
+                worst[seed] = acc[c][w][seed] < worst[seed] ? acc[c][w][seed] : worst[seed];
+        }
+        printf("three words, %d input bits a variable, %zu passes: hello %.3f fine %.3f music %.3f\n", VAR_BITS,
+               at[c], mean(acc[c][0], TS), mean(acc[c][1], TS), mean(acc[c][2], TS));
+        spread("  each seed's worst word", worst, TS);
+    }
+    /* gated on the last check at what the built encoding measured, less a
+     * margin (the test is deterministic): with one input bit a variable this
+     * mean was
+     * 0.794, with four 0.898 (2026-10-17, learner.md) */
+    double gate = VAR_BITS >= 4 ? 0.85 : 0.75;
+    double m = (mean(acc[CHECKS - 1][0], TS) + mean(acc[CHECKS - 1][1], TS) + mean(acc[CHECKS - 1][2], TS)) / 3;
+    CHECK(m >= gate, "three words on two variables: mean %.3f, below %.2f", m, gate);
+}
+
 /* 5. The fast memory (hdmem.h; Khasia, SSRN 6459123): Lemma 1 holds
  *    exactly; identifiers are near-orthogonal; a word learned from ONE
  *    context is recalled for it, and through 10% noise; learning a new word
@@ -211,8 +293,12 @@ static void memory_tests(void)
     learner_free(l);
 }
 
-int main(void)
+int main(int argc, char **argv)
 {
+    if (argc > 1 && !strcmp(argv[1], "three")) { /* only the measure (for comparing builds) */
+        three_words();
+        return 0;
+    }
     /* 0. hearing across the lexicon's growth: 300 new words, each heard
      * once, crossing every reallocation (64, 128, 256). The live learner
      * corrupted its heap at 64 (an unsequenced l->v[lex_add(...)]); under
@@ -392,6 +478,7 @@ int main(void)
     free(want);
     learner_free(l);
     memory_tests();
+    three_words();
     printf("%s\n", fails ? "learner_test: FAILED" : "learner_test: all checks passed");
     return fails ? 1 : 0;
 }

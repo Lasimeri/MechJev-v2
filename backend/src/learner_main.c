@@ -187,6 +187,10 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
         const char *s = getenv("MJ2_SEED");
         c->l = learner_new(s && *s ? strtoull(s, NULL, 10) : DEFAULT_SEED);
     }
+    if (c->l->circuit_fresh)
+        fprintf(stderr, "warning: %s was learned with another input layout: its circuit is new and knows "
+                        "nothing yet (learner circuit-rebuild retrains it from the replay)\n",
+                c->store);
     long mh = conf_long("MJ2_MIN_HEARD", 0);
     if (mh > 0)
         c->l->min_heard = (uint32_t)mh;
@@ -207,11 +211,16 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
     if ((v = getenv("MJ2_DRAW")) && *v)
         s->ties_only = strcmp(v, "sample") != 0; /* sample: drawn from the distribution */
     c->l->mem_weight = (float)DEFAULT_MEM_WEIGHT;
+    if ((v = getenv("MJ2_RECENT_SHARE")) && *v)
+        c->l->recent_share = strtof(v, NULL);
     if ((v = getenv("MJ2_MEMORY")) && *v)
         c->l->mem_weight = strtof(v, NULL);
     if ((v = getenv("MJ2_TOP_K")) && *v)
         s->top_k = atoi(v);
     load_checks(&c->cfg);
+    if (!c->cfg.nchecks) /* found nothing: every reply would pass unjudged (2026-10-17: a copied binary) */
+        fprintf(stderr, "warning: no requirements loaded (restrictions.txt not found beside the checkout; "
+                        "set MJ2_CHECKS): every reply passes unjudged\n");
     char *vars = getenv("MJ2_VARS") && *getenv("MJ2_VARS") ? expand_home(getenv("MJ2_VARS")) : NULL;
     if (!vars) {
         char *root = conf_repo_root();
@@ -772,10 +781,94 @@ static void usage(void)
           "  learner export FILE.c       the discrete circuit as C\n"
           "  learner probe               the fixed questions to the circuit alone (probes.jsonl)\n"
           "  learner memory-rebuild      the fast memory made again from turns.jsonl (prints its agreement)\n"
+          "  learner circuit-rebuild [P] the circuit made new and retrained from the replay (P passes)\n"
           "  learner serve [--bind B]    the HTTP API (default 127.0.0.1:8092)\n"
           "  learner reset --yes         forget everything\n"
           "The engine (xks) must be up: make serve.\n",
           stderr);
+}
+
+/* learner circuit-rebuild [PASSES]: the circuit made new and retrained from
+ * the replay (after the input layout changes, or to start the circuit over
+ * without forgetting the examples). The examples of the last HELD_TURNS
+ * taught turns are held out first: trained on the rest for PASSES (default:
+ * as many as the old circuit had), the new circuit is measured on them with
+ * every input, the variables blanked and the word before blanked, beside
+ * what the old circuit measured on the same turns before learning them
+ * (turns.jsonl). Then a quarter more passes over everything, and saved. */
+#define HELD_TURNS 10
+
+static void eval_line(const char *who, double agree, double no_vars, double no_prev, size_t n)
+{
+    printf("  %-34s agree %.3f, variables blanked %.3f, word before blanked %.3f (%zu words)\n", who, agree,
+           no_vars, no_prev, n);
+}
+
+static int cmd_circuit_rebuild(ctx_t *c, int argc, char **argv)
+{
+    learner_t *l = c->l;
+    size_t passes = argc > 0 ? (size_t)strtoull(argv[0], NULL, 10) : (size_t)l->trained;
+    if (!passes)
+        passes = 200000;
+    /* the last HELD_TURNS taught turns: their examples are the replay's last */
+    FILE *f = fopen(c->turns, "r");
+    size_t steps[HELD_TURNS] = {0}, seen = 0;
+    double old[HELD_TURNS][3] = {{0}};
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t len;
+    while (f && (len = getline(&line, &cap, f)) > 0) {
+        char perr[64];
+        json_t *r = json_parse(line, (size_t)len, perr, sizeof perr);
+        const json_t *mode = r ? jobj_get(r, "mode") : NULL;
+        if (mode && mode->t == J_STR && !strcmp(mode->s, "taught")) {
+            size_t k = seen++ % HELD_TURNS;
+            steps[k] = (size_t)num(r, "steps");
+            const char *ev[3] = {"eval", "eval_no_variables", "eval_no_prev_word"};
+            for (int e = 0; e < 3; e++)
+                old[k][e] = num(jobj_get(r, ev[e]), "agree");
+        }
+        json_free(r);
+    }
+    free(line);
+    if (f)
+        fclose(f);
+    size_t hold = 0;
+    double sum[3] = {0};
+    for (size_t k = 0; k < HELD_TURNS && k < seen; k++) {
+        hold += steps[k];
+        for (int e = 0; e < 3; e++)
+            sum[e] += old[k][e] * (double)steps[k];
+    }
+    if (hold >= l->nreplay)
+        hold = 0;
+    size_t keep = l->nreplay;
+    double t0 = now_ms();
+    learner_circuit_reset(l);
+    l->nreplay = keep - hold;
+    size_t done = learner_learn(l, NULL, 0, 1e15, passes);
+    l->nreplay = keep;
+    printf("circuit-rebuild: %d input bits a variable; %zu passes over %zu examples (%.0f s)\n", VAR_BITS, done,
+           keep - hold, (now_ms() - t0) / 1000);
+    if (hold) {
+        const example_t *held = &l->replay[keep - hold];
+        evalres_t a = learner_eval(l, held, hold, ABL_NONE), b = learner_eval(l, held, hold, ABL_CONCEPTS),
+                  p = learner_eval(l, held, hold, ABL_PREV);
+        printf("held out: the last %zu taught turns (%zu words)\n", seen < HELD_TURNS ? seen : (size_t)HELD_TURNS,
+               hold);
+        eval_line("the new circuit, before them", a.agree, b.agree, p.agree, hold);
+        eval_line("the old circuit, before each (record)", sum[0] / (double)hold, sum[1] / (double)hold,
+                  sum[2] / (double)hold, hold);
+    }
+    done += learner_learn(l, NULL, 0, 1e15, passes / 4);
+    l->circuit_fresh = false;
+    char err[256];
+    if (learner_save(l, c->store, err, sizeof err)) {
+        fprintf(stderr, "error: %s\n", err);
+        return 1;
+    }
+    printf("saved %s (%zu passes in all, %.0f s)\n", c->store, done, (now_ms() - t0) / 1000);
+    return 0;
 }
 
 int main(int argc, char **argv)
@@ -842,7 +935,9 @@ int main(int argc, char **argv)
         }
         if (!rc)
             json_free(rows);
-    } else if (!strcmp(cmd, "memory-rebuild")) {
+    } else if (!strcmp(cmd, "circuit-rebuild"))
+        rc = cmd_circuit_rebuild(&c, argc - 2, argv + 2);
+    else if (!strcmp(cmd, "memory-rebuild")) {
         json_t *rep = NULL;
         rc = speak_memory_rebuild(c.l, &c.cfg, c.turns, &rep, err, sizeof err) || learner_save(c.l, c.store, err, sizeof err) ? 1 : 0;
         if (rc)

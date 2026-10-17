@@ -13,7 +13,10 @@
 
 static const char MAGIC[8] = {'M', 'J', '2', 'C', 'I', 'R', 'C', 0};
 static const char MAGIC_V1[8] = {'M', 'J', '2', 'L', 'R', 'N', 0, 0};
-static const int LAYERS[] = {256, 256, OUT_BITS};
+#ifndef LAYER_W
+#define LAYER_W 256 /* the hidden layers' width */
+#endif
+static const int LAYERS[] = {LAYER_W, LAYER_W, OUT_BITS};
 #define N_LAYERS 3
 #define REPLAY_MAX 20000
 #define LR 0.01f       /* Adam, constant, as the paper trains */
@@ -25,6 +28,7 @@ static const int LAYERS[] = {256, 256, OUT_BITS};
 #define MEM_EPOCHS 3     /* correction epochs a turn at most (the paper's MaxEpochs) */
 #define MEM_EPSILON 0.05 /* stop when fewer than this share of kept contexts are wrong */
 #define MEM_POSITIONS 10 /* positions with their own identifier; later ones share the last */
+#define RECENT_EXAMPLES 40 /* "recent" for rehearsal: about the last 8 turns' words */
 
 static const unsigned POS_AT[POS_BITS] = {1, 2, 3, 5, 8, 12, 20, 30};
 
@@ -219,14 +223,18 @@ void learner_inputs(const learner_t *l, const float *vars, int32_t prev, unsigne
                     uint64_t seed, ablation_t abl, uint8_t *bits)
 {
     uint64_t s = seed;
+    /* each variable VAR_BITS times, every bit drawn from its probability
+     * with this seed (one bit a variable starved the circuit of them: each
+     * reached about 2 of the 128 output bits, the word before 32) */
     for (int i = 0; i < VAR_SLOTS; i++) {
         double p = abl == ABL_CONCEPTS ? 0.5 : vars[i];
-        bits[i] = rand01(&s) < p;
+        for (int r = 0; r < VAR_BITS; r++)
+            bits[i * VAR_BITS + r] = rand01(&s) < p;
     }
     for (int j = 0; j < CODE_IN; j++)
-        bits[VAR_SLOTS + j] = abl != ABL_PREV && prev >= 0 && l->v[prev].e[j] > 0;
+        bits[VAR_IN + j] = abl != ABL_PREV && prev >= 0 && l->v[prev].e[j] > 0;
     for (int j = 0; j < POS_BITS; j++)
-        bits[VAR_SLOTS + CODE_IN + j] = pos >= POS_AT[j];
+        bits[VAR_IN + CODE_IN + j] = pos >= POS_AT[j];
     bits[N_IN - 2] = 0;
     bits[N_IN - 1] = 1;
 }
@@ -524,7 +532,13 @@ size_t learner_learn(learner_t *l, const example_t *ex, size_t n, double budget_
     /* then rehearsal over everything kept, until the budget is spent */
     uint64_t s = l->seed ^ l->trained;
     while (l->nreplay && now_ms() - t0 < budget_ms && (!max_passes || passes < max_passes)) {
-        const example_t *e = &l->replay[splitmix64(&s) % l->nreplay];
+        /* a share of the passes from the newest examples: rehearsed uniformly,
+         * a new turn was about 1% of a turn's training at 387 kept */
+        size_t recent = l->nreplay < RECENT_EXAMPLES ? l->nreplay : RECENT_EXAMPLES;
+        bool newest = l->recent_share > 0 && rand01(&s) < (double)l->recent_share; /* 0: the old stream */
+        size_t at = newest ? l->nreplay - 1 - (size_t)(splitmix64(&s) % recent)
+               : (size_t)(splitmix64(&s) % l->nreplay);
+        const example_t *e = &l->replay[at];
         train_one(l, e, e->id * 0x9E3779B97F4A7C15ull + splitmix64(&s), base, &t, gw, gs, ge);
         passes++;
     }
@@ -664,9 +678,14 @@ int learner_load(const char *path, learner_t **out, char *err, size_t errlen)
         return -1;
     }
     /* Another shape would be read with other wiring and other meanings for its
-     * inputs: refused, never converted. Versions 2 and 3 are read as 4: 2 with no
-     * rewards, both with an empty memory (additions; no meaning changed). */
-    if ((ver != LEARNER_VERSION && ver != 2 && ver != 3) || nin != N_IN || outb != OUT_BITS || slots != VAR_SLOTS) {
+     * inputs: refused, never converted. Versions 2 and 3 are read as 4: 2 with
+     * no rewards, both with an empty memory (additions). A store whose circuit
+     * has one input bit a variable, read by a build with more (VAR_BITS), keeps
+     * everything it learned except the circuit: its bytes are read past and a
+     * new circuit made (circuit_fresh; learner circuit-rebuild retrains it from
+     * the replay). */
+    bool old_inputs = nin != N_IN && nin == N_IN_ONE_BIT;
+    if (ver < 2 || ver > LEARNER_VERSION || (nin != N_IN && !old_inputs) || outb != OUT_BITS || slots != VAR_SLOTS) {
         snprintf(err, errlen,
                  "%s: store version %u (%u inputs, %u outputs); this learner is version %u (%u, %u)",
                  path, ver, nin, outb, LEARNER_VERSION, (unsigned)N_IN, (unsigned)OUT_BITS);
@@ -706,7 +725,18 @@ int learner_load(const char *path, learner_t **out, char *err, size_t errlen)
             l->slot[i][len] = 0;
         }
     }
-    if (circuit_read(&l->circ, f) || !R(nr))
+    if (old_inputs) {
+        circuit_t old;
+        if (circuit_read(&old, f)) {
+            circuit_free(&old);
+            goto bad;
+        }
+        circuit_free(&old);
+        circuit_init(&l->circ, N_IN, N_LAYERS, LAYERS, l->seed);
+        l->circuit_fresh = true;
+    } else if (circuit_read(&l->circ, f))
+        goto bad;
+    if (!R(nr))
         goto bad;
     for (uint64_t i = 0; i < nr; i++) {
         example_t e;
@@ -867,4 +897,12 @@ double learner_recall_margin(const learner_t *l, const hv_t *context)
             s2 = s;
     }
     return isinf(s2) ? NAN : s1 - s2;
+}
+
+void learner_circuit_reset(learner_t *l)
+{
+    circuit_free(&l->circ);
+    circuit_init(&l->circ, N_IN, N_LAYERS, LAYERS, l->seed);
+    l->trained = 0;
+    l->circuit_fresh = true;
 }

@@ -3,6 +3,10 @@
 # interleaved, ROUNDS times (a probe changes nothing, so the arms share one
 # store). learner serve must be stopped: the probe takes the writer lock.
 set -eu
+# every binary judges by the checkout's files, wherever it sits (a binary
+# outside the checkout found no restrictions.txt and passed everything)
+repo=$(cd "$(dirname "$0")/.." && pwd)
+export MJ2_CHECKS="${MJ2_CHECKS:-$repo/restrictions.txt}" MJ2_VARS="${MJ2_VARS:-$repo/variables.txt}"
 L=$(dirname "$0")/../backend/build/learner
 rounds=$1
 shift
