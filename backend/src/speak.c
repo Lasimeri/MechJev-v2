@@ -275,9 +275,11 @@ typedef struct {
     uint64_t tokens;
 } cost_t;
 
-/* POST {state, questions}; the answers object (owned by *resp). */
-static json_t *ask(const speak_cfg_t *cfg, const char *state, json_t *questions, json_t **resp,
-                   cost_t *cost, char *err, size_t errlen)
+/* POST {state, questions}; the answers object (owned by *resp). rotations
+ * > 0 sets the engine's option rotations for this request's Choices (the
+ * xks extension; 0: the engine's own XKS_PERMUTATIONS). */
+static json_t *ask_x(const speak_cfg_t *cfg, const char *state, json_t *questions, size_t rotations,
+                     json_t **resp, cost_t *cost, char *err, size_t errlen)
 {
     json_t *req = jobj();
     jobj_set(req, "state", jstr(state));
@@ -286,6 +288,8 @@ static json_t *ask(const speak_cfg_t *cfg, const char *state, json_t *questions,
      * pass a round instead of one a length (engine.c) */
     json_t *ext = jobj();
     jobj_set(ext, "pad_equal", jbool(true));
+    if (rotations)
+        jobj_set(ext, "permutations", ju64(rotations));
     jobj_set(req, "xks", ext);
     char *body = json_dump(req);
     json_free(req);
@@ -316,6 +320,12 @@ static json_t *ask(const speak_cfg_t *cfg, const char *state, json_t *questions,
         cost->tokens += u->u;
     *resp = v;
     return jobj_get(v, "answers");
+}
+
+static json_t *ask(const speak_cfg_t *cfg, const char *state, json_t *questions, json_t **resp,
+                   cost_t *cost, char *err, size_t errlen)
+{
+    return ask_x(cfg, state, questions, 0, resp, cost, err, errlen);
 }
 
 static json_t *choice_q(const char *instructions, char **keys, size_t n)
@@ -1482,4 +1492,30 @@ int speak_memory_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns
     free(margin);
     *report = o;
     return 0;
+}
+
+/* ---- shared with the teacher (teach.c) ------------------------------ */
+
+json_t *speak_ask(const speak_cfg_t *cfg, const char *state, json_t *questions, json_t **resp, char *err,
+                  size_t errlen)
+{
+    cost_t cost = {0};
+    return ask(cfg, state, questions, resp, &cost, err, errlen);
+}
+
+json_t *speak_choice_q(const char *instructions, char **keys, size_t n) { return choice_q(instructions, keys, n); }
+
+double speak_prob(const json_t *answer, const char *key) { return prob_of(answer, key); }
+
+bool speak_sentence_end(const char *w) { return sentence_end(w); }
+
+uint64_t speak_clock_seed(void) { return clock_seed(); }
+
+char *speak_conversation(const history_t *h, const char *person) { return conversation(h, person); }
+
+json_t *speak_ask_rotations(const speak_cfg_t *cfg, const char *state, json_t *questions, size_t rotations,
+                            json_t **resp, char *err, size_t errlen)
+{
+    cost_t cost = {0};
+    return ask_x(cfg, state, questions, rotations, resp, &cost, err, errlen);
 }

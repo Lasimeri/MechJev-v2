@@ -79,6 +79,20 @@ void history_free(history_t *h);
  * punctuation, capitals at a sentence start and for I. */
 char *render_words(char **w, size_t n);
 
+/* Shared with the teacher (teach.c): one request to the engine (the
+ * answers object, owned by *resp), a Choice question, an option's
+ * probability in an answer, whether a word ends a sentence, a clock seed,
+ * and the conversation as the engine's state. */
+json_t *speak_ask(const speak_cfg_t *cfg, const char *state, json_t *questions, json_t **resp, char *err,
+                  size_t errlen);
+json_t *speak_choice_q(const char *instructions, char **keys, size_t n);
+json_t *speak_ask_rotations(const speak_cfg_t *cfg, const char *state, json_t *questions, size_t rotations,
+                            json_t **resp, char *err, size_t errlen);
+double speak_prob(const json_t *answer, const char *key);
+bool speak_sentence_end(const char *w);
+uint64_t speak_clock_seed(void);
+char *speak_conversation(const history_t *h, const char *person);
+
 /* One turn: the reply in *reply, the turn's record (a row of the curve and
  * the per-word trace) in *record. 0 on success. */
 /* The fast memory made again from the record (turns.jsonl), in order: each

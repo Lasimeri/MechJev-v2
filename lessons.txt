@@ -1,0 +1,17 @@
+# What the teacher (the decision engine) teaches. A line a lesson:
+#   NAME | GOAL | CHECK [| HELD-OUT GOAL]
+# GOAL is what the engine's line should do; it composes the line itself,
+# word by word (teach.c). CHECK is a statement about the learner's reply,
+# judged as a Noul: the lesson is passed when it holds and every
+# requirement in restrictions.txt does. HELD-OUT GOAL, when given, is what
+# the line that tests mastery should do instead (it is never taught).
+greet | Greet the learner and ask how it is. | The reply greets back or says how the one replying is.
+yes-no | Ask the learner a yes or no question about something it may like. | The reply answers the question with yes or no.
+likes | Ask the learner what it likes. | The reply names something the one replying likes.
+feeling | Ask the learner how it feels today. | The reply says how the one replying feels.
+name-tell | Tell the learner that its name is MechJev. | The reply says the name MechJev or agrees that it is its name.
+name | Ask the learner its name. | The reply says that its name is MechJev.
+day | Ask the learner about its day. | The reply says something about the day of the one replying.
+weather | Ask the learner what the weather is like. | The reply says something about the weather.
+thanks | Thank the learner for talking with you. | The reply answers the thanks kindly.
+goodbye | Say goodbye to the learner. | The reply says goodbye.

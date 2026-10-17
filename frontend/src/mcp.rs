@@ -40,6 +40,8 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
         {"name": "probe", "description": "The acquisition curve: the fixed probe questions (probes.txt) put to the circuit alone from an empty conversation; the learner hears, learns and counts nothing. One row each (reply, coherence, requirements), also kept in probes.jsonl.",
          "inputSchema": {"type": "object", "properties": {}}},
+        {"name": "teach", "description": "Lessons from the teacher (the decision engine, which only decides): it chooses a lesson from the learner's record (lessons.txt), composes its own line a word at a time by Choice, lets the learner try alone, judges it (the requirements and the lesson's own check), demonstrates in a taught turn when it fails (3 at most) and tests mastery on a fresh line never taught. Minutes a lesson. Rows as lessons.jsonl.",
+         "inputSchema": {"type": "object", "properties": {"lessons": {"type": "integer", "description": "how many lessons the teacher chooses (1)"}, "measure": {"type": "boolean", "description": "measure every lesson on a fresh line; teach nothing"}, "lesson": {"type": "string", "description": "this lesson (a name in lessons.txt)"}}}},
         {"name": "stats", "description": "What the learner knows: lexicon, speakable words, variable slots, circuit, turns, replay, most used words.",
          "inputSchema": {"type": "object", "properties": {}}},
         {"name": "judge", "description": "Typed questions to the decision engine (System One: noul, choice, score) about a state; calibrated probabilities back, no text.",
@@ -119,6 +121,11 @@ fn call(name: &str, args: &Value) -> Result<Value, String> {
             let l = Learner::new();
             l.ensure()?;
             l.probe()
+        }
+        "teach" => {
+            let l = Learner::new();
+            l.ensure()?;
+            l.teach(args["lessons"].as_u64().unwrap_or(1), args["measure"].as_bool() == Some(true), args["lesson"].as_str())
         }
         "stats" => {
             let l = Learner::new();

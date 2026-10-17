@@ -175,6 +175,26 @@ variables win:
 
 The details are in the sibling `.md` of each source file in `backend/src/`.
 
+## The teacher
+
+The decision engine also teaches (the user's ask). It still only decides:
+
+- it **chooses the lesson** the learner needs most (a Choice over
+  `lessons.txt`, with the learner's record in the question);
+- it **composes its own line** to the learner, a word at a time, by Choice
+  among the words in `teacher_words.txt` and the words the learner has
+  heard;
+- it **judges** the learner's reply by a Noul with the lesson's own check,
+  beside the requirements.
+
+A lesson: the learner tries the line alone (nothing learned); failed, the
+engine demonstrates (a taught turn on the line, the keeper on) and it tries
+again, 3 times at most; then mastery is tested on a fresh line the teacher
+composes and never teaches. The learner's name, for the name lessons, is
+MechJev. `mjev2 teach [N]` (or the MCP `teach` tool, or `learner teach`;
+`--measure` tests every lesson without teaching); each lesson is a row in
+`lessons.jsonl`. Details: `backend/src/teach.md`.
+
 ## Measured
 
 Every number comes with the command or file that produced it.

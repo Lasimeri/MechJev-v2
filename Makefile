@@ -57,7 +57,7 @@ clean:
 	rm -rf $(B) frontend/target
 
 # The learner links no llama.cpp: its decisions come from xks over HTTP.
-LEARNER_OBJS := $(B)/util.o $(B)/json.o $(B)/http.o $(B)/conf.o $(B)/circuit.o $(B)/hdmem.o $(B)/learner.o \
+LEARNER_OBJS := $(B)/util.o $(B)/json.o $(B)/http.o $(B)/conf.o $(B)/circuit.o $(B)/hdmem.o $(B)/learner.o $(B)/teach.o \
                 $(B)/speak.o $(B)/learner_main.o
 
 $(B)/learner: $(LEARNER_OBJS)

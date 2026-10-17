@@ -167,6 +167,13 @@ static const char *kind_name(qkind_t k)
 int judge_raw(engine_t *e, const judge_cfg_t *cfg, const json_t *req, raw_t **out, size_t *nout,
               char *err, size_t errlen)
 {
+    /* the xks extension {"xks": {"permutations": N}}: this request's Choices
+     * in N rotations instead of XKS_PERMUTATIONS (the teacher's word groups,
+     * already shuffled by a clock seed, take 1: a third of the cost) */
+    size_t rotations = cfg->permutations;
+    const json_t *xr = jobj_get(jobj_get(req, "xks"), "permutations");
+    if (xr && xr->t == J_NUM && xr->f >= 1)
+        rotations = (size_t)xr->f;
     *out = NULL;
     *nout = 0;
     question_t *qs;
@@ -196,7 +203,7 @@ int judge_raw(engine_t *e, const judge_cfg_t *cfg, const json_t *req, raw_t **ou
         }
         size_t p = 1;
         if (q->kind == Q_CHOICE) {
-            p = cfg->permutations < 1 ? 1 : cfg->permutations;
+            p = rotations < 1 ? 1 : rotations;
             if (p > n)
                 p = n;
         }

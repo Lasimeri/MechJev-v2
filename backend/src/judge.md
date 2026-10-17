@@ -15,3 +15,7 @@ Intel Phi Jev's `judge.rs` and `score.rs`.
 - Confidence uses TypeSafe's system-one-adapter formulas.
 - `usage.input_tokens` counts only the tokens decoded.
 - `--debug` adds the raw log-probabilities, label mass and token counts.
+- The xks extension `{"xks": {"permutations": N}}` sets this request's
+  Choices to N option rotations instead of `XKS_PERMUTATIONS` (the
+  teacher's word groups, already shuffled by a clock seed, take 1: a third
+  of the cost; teach.md). Requests without it are unchanged.

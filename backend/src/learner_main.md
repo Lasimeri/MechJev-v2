@@ -42,3 +42,14 @@ on marks) and the margin between its first and second word, and saves the
 store. It takes the writer lock: stop `learner serve` first.
 `MJ2_MEMORY` is the memory's weight in a word's score (0, the default: it
 learns but does not speak).
+
+`learner teach [N] [--measure] [--lesson NAME]` (also `POST /v1/teach`
+{lessons, measure, lesson}, `mjev2 teach`, the MCP `teach` tool): lessons
+from the teacher, the decision engine (teach.md). Each lesson is a row in
+`lessons.jsonl`; its demonstrations are turns in turns.jsonl. A lesson that
+fails (say the engine composes only the taught line again for the test, or
+does not answer) is reported and the next one taught; two in a row stop the
+run. `learner compose [LESSON...]` shows the lines the teacher composes
+(`MJ2_COMPOSE_TRACE=1`: every word's options); it learns nothing and takes
+no lock. `MJ2_LESSONS` and `MJ2_TEACHER_WORDS` override `lessons.txt` and
+`teacher_words.txt` in the checkout.
