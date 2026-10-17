@@ -206,6 +206,8 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
         s->min_p = strtod(v, NULL);
     if ((v = getenv("MJ2_REPEAT_PENALTY")) && *v)
         s->repeat_penalty = strtod(v, NULL);
+    if ((v = getenv("MJ2_KEEP_DROP")) && *v)
+        c->cfg.keep_drop = strtod(v, NULL);
     if ((v = getenv("MJ2_LOOKAHEAD")) && *v)
         c->cfg.lookahead = (size_t)strtoul(v, NULL, 10);
     if ((v = getenv("MJ2_DRAW")) && *v)

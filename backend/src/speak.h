@@ -55,6 +55,7 @@ typedef struct {
     bool alone; /* the circuit speaks with no engine choice (it still perceives and judges) */
     bool probe; /* a measurement: alone, and the learner hears, learns and counts nothing */
     size_t lookahead; /* the rerank's best scored for coherence; 0: the rerank's top is said */
+    double keep_drop; /* the coherence keeper: end a reply this far below its best sentence end; < 0: off */
     sampling_t sampling;
     /* Called with the reply so far after every word (a terminal shows it live). */
     void (*on_word)(void *ud, const char *reply_so_far);

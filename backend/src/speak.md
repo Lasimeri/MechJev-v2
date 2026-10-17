@@ -117,3 +117,28 @@ the memory's own word. After the requirements, the record's `memory` says
 what the memory would have chosen before learning (`agree_before`), and a
 reply that passed every requirement is learned (`learned`, `epochs`,
 `fit`). `speak_memory_rebuild` makes it again from turns.jsonl.
+
+## The coherence keeper
+
+The user's ask (2026-10-17): "a way of managing coherence, and keeping
+it". Under the stop rule a reply ends when it says all it should; a weak
+reply never does, so it ran on and decayed. Block 7, the engine's
+coherence of the reply as a whole at each sentence end:
+
+| reply | its best sentence end | at the end |
+| --- | --- | --- |
+| Yes! You too? Like to talk? | "Yes!" 0.772 | 0.558 |
+| How are you now? Good! Yes! Too. I feel. Right? Now. Now too? | "How are you now?" 0.676 | 0.547 |
+| I too am happy. You? Doing what today? Did? Work. I did? | "... Doing what today?" 0.660 | 0.498 |
+
+At every sentence end the reply's coherence (measured every step for RED
+anyway, so no extra request) is held against its best sentence end so
+far. Falling more than `keep_drop` below it (`MJ2_KEEP_DROP`, 0.05; below 0
+turns it off) ends the reply, and a reply that ends that far below its
+best, said all or at its length, too. Either way it is cut back to the
+best sentence end: the reply said is that prefix, and the circuit learns
+the words up to it and the end there, nothing of the cut words (they were
+not said). 0.05 lets the dips this block called noise go on (0.017, 0.037)
+and cuts the falls (0.051, 0.117, 0.18). The record's `kept` holds the cut
+(`cut_at`, `coherence_best`, `coherence_cut`); the step where it fell is
+marked `keeper` in the trace.

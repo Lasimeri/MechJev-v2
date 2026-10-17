@@ -29,6 +29,7 @@ void speak_cfg_default(speak_cfg_t *c)
     c->train_ms = 3000;
     c->learn = true;
     c->lookahead = 3;
+    c->keep_drop = 0.05;
     c->sampling = (sampling_t){
         .temp = 0.5, .top_p = 0.95, .min_p = 0.05, .repeat_penalty = 1.2, .top_k = 75, .ties_only = true};
 }
@@ -976,6 +977,10 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     double *coh = xcalloc(room + 2, sizeof *coh); /* coh[k]: the coherence of the first k words */
     bool *have = xcalloc(room + 2, sizeof *have);
     size_t t = 0, nex = 0, widened = 0;
+    /* the coherence keeper: the most coherent sentence end so far */
+    size_t best_k = 0;
+    double best_c = -1;
+    bool cut = false;
     json_t *trace = jarr();
     bool ended = false;
     int32_t prev = lex_find(l, START);
@@ -1115,6 +1120,24 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
         jobj_set(step, "reply_vars", step_vars);
         jobj_set(step, "ms", jf64(round(now_ms() - ts)));
         jarr_push(trace, step);
+        /* The coherence keeper (the user's ask, 2026-10-17: "a way of
+         * managing coherence, and keeping it"). At every sentence end the
+         * reply's coherence as a whole is held against the best sentence end
+         * so far; falling more than keep_drop below it ends the reply, which
+         * is then cut back to that best end (after the loop). Without it a
+         * reply that never "said all" ran on and decayed: "Yes!" 0.772, then
+         * "Yes! You too? Like to talk?" 0.558 (block 7). */
+        if (cfg->keep_drop >= 0 && t > 0 && sentence_end(said[t - 1]) && have[t]) {
+            if (coh[t] > best_c) {
+                best_c = coh[t];
+                best_k = t;
+            } else if (best_c - coh[t] > cfg->keep_drop) {
+                jobj_set(step, "keeper", jstr("fell from the best sentence end: cut back to it"));
+                cut = true;
+                ended = true;
+                break;
+            }
+        }
         if (!strcmp(l->v[said_word].word, END)) {
             ended = true;
             break;
@@ -1134,6 +1157,41 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
         if (ask_reply_state(cfg, state, said, t, NULL, NULL, &coh[t], &cost, err, errlen))
             goto fail;
         have[t] = true;
+    }
+    /* The keeper's last look: a reply that ended (said all, or at its length)
+     * more than keep_drop below its best sentence end is cut back too. Then
+     * the cut: the reply ends at the best sentence end, and what the circuit
+     * learns is the words up to it and the end there, nothing of what was cut
+     * (the words after it were not said). */
+    if (cfg->keep_drop >= 0 && !cut && best_k > 0 && t > best_k && have[t] && best_c - coh[t] > cfg->keep_drop)
+        cut = true;
+    json_t *kept = jnull();
+    if (cut && best_k > 0 && best_k < t) {
+        json_free(kept);
+        kept = jobj();
+        jobj_set(kept, "cut_at", ju64(best_k));
+        jobj_set(kept, "tokens_before", ju64(t));
+        jobj_set(kept, "coherence_best", jf64(round(best_c * 1e4) / 1e4));
+        jobj_set(kept, "coherence_cut", jf64(round(coh[t] * 1e4) / 1e4));
+        int32_t endw = lex_find(l, END);
+        size_t keep = 0;
+        for (size_t k = 0; k < nex; k++) {
+            if (ex[k].pos > best_k || (ex[k].pos == best_k && endw < 0))
+                continue;
+            if (ex[k].pos == best_k) {
+                ex[k].top = ex[k].said = endw;
+                labels[k] = endw;
+            }
+            ex[keep] = ex[k];
+            ctxs[keep] = ctxs[k];
+            labels[keep] = labels[k];
+            keep++;
+        }
+        nex = keep;
+        t = best_k;
+        words = 0;
+        for (size_t k = 0; k < t; k++)
+            words += !is_punct(said[k]);
     }
     double reward_sum = 0;
     for (size_t k = 0; k < nex; k++) {
@@ -1230,6 +1288,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     jobj_set(rec, "words", ju64(words));
     jobj_set(rec, "tokens", ju64(t)); /* words and marks: what ms_per_word divides by */
     jobj_set(rec, "ended", jbool(ended));
+    jobj_set(rec, "kept", kept); /* the coherence keeper's cut, or null */
     jobj_set(rec, "steps", ju64(nex));
     jobj_set(rec, "widened", ju64(widened));
     jobj_set(rec, "coherence_final", t && have[t] ? jf64(round(coh[t] * 1e4) / 1e4) : jnull());
