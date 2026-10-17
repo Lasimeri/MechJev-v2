@@ -27,6 +27,7 @@ void speak_cfg_default(speak_cfg_t *c)
     c->max_words = 60;
     c->train_ms = 3000;
     c->learn = true;
+    c->lookahead = 3;
     c->sampling = (sampling_t){
         .temp = 0.5, .top_p = 0.95, .min_p = 0.05, .repeat_penalty = 1.2, .top_k = 75, .ties_only = true};
 }
@@ -649,6 +650,89 @@ static int ask_reply_state(const speak_cfg_t *cfg, const char *state, char **sai
     return 0;
 }
 
+/* The coherence lookahead (the user's choice, 2026-10-17): the top
+ * `lookahead` words of the rerank, in the order the user's settings give
+ * (the repeat penalty applied), each scored by the engine for the coherence
+ * of the reply with it, in one request; the word said is the one that reads
+ * best, and where a sentence has ended the reply stops when none reads
+ * better than the reply as it is. Before this the rerank's top was said even
+ * when the per-token score marked it harmful, and replies collapsed into
+ * "Yes. Too." The rerank's own top and every score go into the trace. */
+static int lookahead(learner_t *l, const speak_cfg_t *cfg, const char *state, char **said, size_t t,
+                     step_t *st, json_t *seen, cost_t *cost, char *err, size_t errlen)
+{
+    if (!cfg->lookahead || !st->n)
+        return 0;
+    size_t idx[MAX_OPTS];
+    double w[MAX_OPTS];
+    for (size_t i = 0; i < st->n; i++) {
+        bool rep = false;
+        for (size_t j = 0; j < t; j++)
+            rep |= !strcmp(said[j], l->v[st->opt[i]].word);
+        w[i] = rep && cfg->sampling.repeat_penalty > 0 ? st->q[i] / cfg->sampling.repeat_penalty : st->q[i];
+        idx[i] = i;
+    }
+    for (size_t i = 1; i < st->n; i++) /* by weight, high first, stable */
+        for (size_t j = i; j > 0 && w[idx[j]] > w[idx[j - 1]]; j--) {
+            size_t tmp = idx[j];
+            idx[j] = idx[j - 1];
+            idx[j - 1] = tmp;
+        }
+    int32_t cand[MAX_OPTS];
+    size_t nc = 0;
+    for (size_t i = 0; i < st->n && nc < cfg->lookahead; i++)
+        if (strcmp(l->v[st->opt[idx[i]]].word, END))
+            cand[nc++] = st->opt[idx[i]];
+    if (!nc)
+        return 0;
+    json_t *qs = jobj();
+    char **w2 = xmalloc((t + 1) * sizeof *w2);
+    for (size_t j = 0; j < t; j++)
+        w2[j] = said[j];
+    for (size_t i = 0; i < nc; i++) {
+        w2[t] = l->v[cand[i]].word;
+        char *text = render_words(w2, t + 1);
+        json_t *q = coherence_q(text);
+        free(text);
+        char id[24];
+        snprintf(id, sizeof id, "c%zu", i);
+        /* coherence_q names its question "coherence" inside; the id is ours */
+        jobj_set(qs, id, q);
+    }
+    free(w2);
+    json_t *resp = NULL;
+    json_t *ans = ask(cfg, state, qs, &resp, cost, err, errlen);
+    if (!ans)
+        return -1;
+    double best = -1;
+    int32_t pick = -1;
+    for (size_t i = 0; i < nc; i++) {
+        char id[24];
+        snprintf(id, sizeof id, "c%zu", i);
+        const json_t *s = jobj_get(jobj_get(ans, id), "score");
+        double levels = (double)(sizeof COHERENCE / sizeof *COHERENCE) - 1;
+        double c = s && s->t == J_NUM ? s->f / levels : 0;
+        jobj_set(seen, l->v[cand[i]].word, jf64(round(c * 1e4) / 1e4));
+        if (c > best) {
+            best = c;
+            pick = cand[i];
+        }
+    }
+    json_free(resp);
+    int32_t end = lex_find(l, END);
+    bool may_stop = end >= 0 && t > 0 && sentence_end(said[t - 1]);
+    if (may_stop) {
+        jobj_set(seen, "(stop)", jf64(round(st->coh * 1e4) / 1e4));
+        if (st->coh >= best)
+            pick = end;
+    }
+    st->pick = pick;
+    for (size_t i = 0; i < st->n; i++) /* p: the said word's share of the shown */
+        if (st->opt[i] == pick)
+            st->p_pick = st->q[i];
+    return 0;
+}
+
 /* The circuit unsure: the lexicon put to the engine in groups, each
  * group's word (when it beats "not listed") a candidate. */
 static size_t widen(learner_t *l, const speak_cfg_t *cfg, const char *state, char **said, size_t t,
@@ -888,6 +972,18 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
                 json_free(step_vars);
                 goto fail;
             }
+            int32_t rerank_top = st.top;
+            json_t *look = jobj();
+            if (lookahead(l, cfg, state, said, t, &st, look, &cost, err, errlen)) {
+                json_free(look);
+                json_free(step);
+                json_free(step_vars);
+                goto fail;
+            }
+            if (cfg->lookahead)
+                st.top = st.pick; /* the decision the circuit learns: the coherent one */
+            jobj_set(step, "rerank_top", jstr(l->v[rerank_top].word));
+            jobj_set(step, "lookahead", look);
             bool from_circuit = false;
             for (size_t i = 0; i < own; i++)
                 from_circuit |= cands[i] == st.top;

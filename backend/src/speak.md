@@ -35,7 +35,15 @@ One turn of conversation, every word a decision of the engine.
      a candidate added, as English (jev-llm's rerank). The `step`
      variables about the reply so far go in the same request and feed the
      next word's inputs.
-   - **The word said** is, by the user's choice, the most likely one after
+   - **The coherence lookahead** (the user's choice): the rerank's top 3, in
+     the order the user's settings give, are each scored by the engine for
+     the coherence of the reply with them, in one padded request. The word
+     said is the one that reads best; after a sentence ends, the reply stops
+     if none reads better than the reply as it is. That choice is also what
+     the circuit learns. Before this, block 4 collapsed into "Yes. Too.", the
+     rerank's top said even where the per-token score marked "too" harmful.
+     `MJ2_LOOKAHEAD=0` restores the rule below.
+   - **(without the lookahead)** the word said is, by the user's choice, the most likely one after
      their settings (repeat penalty 1.2, top-k 75, top-p 0.95, min-p 0.05,
      temp 0.5, in llama.cpp's order), the clock seed breaking exact ties
      (`MJ2_DRAW=sample` draws from the distribution instead: under it, 3 of
