@@ -280,6 +280,11 @@ static json_t *ask(const speak_cfg_t *cfg, const char *state, json_t *questions,
     json_t *req = jobj();
     jobj_set(req, "state", jstr(state));
     jobj_set(req, "questions", questions);
+    /* the engine's extension: suffixes padded to equal length, one forward
+     * pass a round instead of one a length (engine.c) */
+    json_t *ext = jobj();
+    jobj_set(ext, "pad_equal", jbool(true));
+    jobj_set(req, "xks", ext);
     char *body = json_dump(req);
     json_free(req);
     char *out = NULL;
@@ -538,6 +543,21 @@ static int rerank(learner_t *l, const speak_cfg_t *cfg, const char *state, char 
         }
         keys[no] = k;
         word[no++] = cands[i];
+    }
+    /* Shown in an order the circuit did not choose: the candidates arrive
+     * ranked by the circuit, and cyclic rotations keep its first word at the
+     * front, so any pull of the engine toward the first option would favour
+     * the circuit's own pick and inflate its agreement. A Fisher-Yates shuffle
+     * from a clock seed. */
+    uint64_t sh = clock_seed() ^ 0x5348554646ull;
+    for (size_t i = no; i > 1; i--) {
+        size_t j = (size_t)(splitmix64(&sh) % i);
+        char *tk = keys[i - 1];
+        keys[i - 1] = keys[j];
+        keys[j] = tk;
+        int32_t tw = word[i - 1];
+        word[i - 1] = word[j];
+        word[j] = tw;
     }
     char *so_far = render_words(said, t);
     sb_t ins;

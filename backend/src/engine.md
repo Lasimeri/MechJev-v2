@@ -42,3 +42,34 @@ Measured (2026-10-17, the 35B-A3B Q4_K_M, RTX 3090 Ti, 50% of the layers):
 - **The copy:** forked against split with `XKS_FORKS=1` is exactly 0 on 15
   fingerprints of 3 requests, sessions of 61 to 1,400 tokens
   (`xks polygraph`).
+
+## pad_equal (an xks extension)
+
+**The cost.** A hybrid model (the 35B is one) splits a batch into ubatches
+with the same number of tokens from every sequence (llama.cpp
+`llama-batch.cpp` `split_equal`), so suffixes of different lengths in one
+round cost a forward pass each. Measured 2026-10-17 on the live engine (the
+35B, 50% of its layers on the GPU, ubatch 512):
+
+| fingerprints | 1 | 3 | 6 | 12 |
+| --- | --- | --- | --- | --- |
+| one length | 0.97 to 1.15 s | 1.07 to 1.08 s | 1.09 to 1.20 s | 9.41 to 13.65 s |
+| different lengths | 0.99 to 1.00 s | 1.61 to 3.51 s | 4.44 to 6.53 s | 12.47 to 12.89 s |
+
+**The extension.** A request with `"xks": {"pad_equal": true}` (the Rust xks
+and TypeSafe ignore the field) has every suffix of a round left-padded with
+newline tokens to the round's longest. Its prompts change by those leading
+newlines; requests without it are unchanged (parity request 1 re-checked:
+identical answers).
+
+**On the learner's word step** (the rerank in 3 rotations, 5 step Nouls,
+the coherence Score; 3 interleaved pairs each):
+
+| | time | answers |
+| --- | --- | --- |
+| unpadded, ubatch 512 | 7.20 to 10.20 s | |
+| padded, ubatch 512 | 5.40 to 5.51 s | same choice; Nouls within 0.07 |
+| padded, ubatch 2048 | 1.99 to 2.04 s | within 0.04 of padded at 512; repeats identical; 42 MiB more VRAM |
+
+MechJev-v2's `xks.conf` sets `XKS_UBATCH=2048`, and the parity scripts pin
+512.

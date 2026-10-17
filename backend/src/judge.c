@@ -231,7 +231,9 @@ int judge_raw(engine_t *e, const judge_cfg_t *cfg, const json_t *req, raw_t **ou
     scored_t *sc = NULL;
     if (!rc) {
         sc = xcalloc(ni ? ni : 1, sizeof *sc);
-        rc = engine_score_many(e, &prefix, items, ni, sc, err, errlen);
+        /* the xks extension {"xks": {"pad_equal": true}}: equal-length suffixes */
+        const json_t *xx = jobj_get(jobj_get(req, "xks"), "pad_equal");
+        rc = engine_score_many(e, xx && xx->t == J_BOOL && xx->b, &prefix, items, ni, sc, err, errlen);
     }
     if (!rc) {
         size_t at = 0;

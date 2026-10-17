@@ -7,7 +7,7 @@ set -u
 out=$1; port=$2; shift 2
 here=$(dirname "$0")
 log="$out.log"
-"$@" > "$log" 2>&1 &
+XKS_UBATCH=${XKS_UBATCH:-512} "$@" > "$log" 2>&1 &
 pid=$!
 t0=$(date +%s)
 until curl -sf "http://127.0.0.1:$port/health" > /dev/null; do

@@ -99,6 +99,7 @@ struct engine {
     char *name;
     size_t forks, n_ctx, n_batch;
     bool recurrent;
+    llama_token pad_tok; /* a newline: what pad_equal pads with */
 };
 
 void engine_opts_default(engine_opts_t *o, const char *gguf)
@@ -206,6 +207,9 @@ static char *file_stem(const char *path)
     return xstrndup(b, (size_t)(dot - b));
 }
 
+static int tokenize_with(engine_t *e, const char *text, size_t len, bool add_special,
+                         bool parse_special, ivec_t *out);
+
 engine_t *engine_open(const engine_opts_t *o, char *err, size_t errlen)
 {
     static bool init;
@@ -266,6 +270,12 @@ engine_t *engine_open(const engine_opts_t *o, char *err, size_t errlen)
     e->vocab = llama_model_get_vocab(model);
     e->n_vocab = (size_t)llama_vocab_n_tokens(e->vocab);
     e->recurrent = llama_model_is_recurrent(model) || llama_model_is_hybrid(model);
+    {
+        ivec_t nl = {0};
+        tokenize_with(e, "\n", 1, false, false, &nl);
+        e->pad_tok = nl.n ? nl.v[nl.n - 1] : llama_vocab_nl(e->vocab);
+        iv_free(&nl);
+    }
     e->forks = o->forks;
     e->n_ctx = o->n_ctx;
     e->n_batch = o->n_batch;
@@ -665,7 +675,7 @@ static void round_out(void *ud, long slot, int32_t row)
     r->evaluated[slot] = r->prompts[slot].n - r->shared;
 }
 
-static int fork_and_read(engine_t *e, const ivec_t *prompts, const ivec_t **const *cands,
+static int fork_and_read(engine_t *e, bool pad_equal, const ivec_t *prompts, const ivec_t **const *cands,
                          const size_t *ncand, size_t np, size_t shared, scored_t *out, char *err,
                          size_t errlen)
 {
@@ -725,9 +735,21 @@ static int fork_and_read(engine_t *e, const ivec_t *prompts, const ivec_t **cons
     round_ud_t ud = {e, firsts, nfirst, lp, evaluated, prompts, shared};
     size_t i = 0;
     while (i < ns) {
-        size_t j = i, cells = shared;
-        while (j < ns && j - i < e->forks && cells + prompts[single[j]].n - shared <= e->n_ctx) {
-            cells += prompts[single[j]].n - shared;
+        /* With pad_equal (an xks extension a caller asks for), every suffix
+         * of the round is left-padded with newlines to the longest: a hybrid
+         * model splits a batch into ubatches of equal tokens per sequence
+         * (llama-batch.cpp split_equal), so suffixes of different lengths
+         * cost a forward pass each (measured 2026-10-17: 6 Nouls of one
+         * length 1.1 s, of six lengths 4.4 to 6.5 s). */
+        size_t j = i, cells = shared, longest = 0;
+        while (j < ns && j - i < e->forks) {
+            size_t len = prompts[single[j]].n - shared;
+            size_t lg = len > longest ? len : longest;
+            size_t need = pad_equal ? shared + (j - i + 1) * lg : cells + len;
+            if (need > e->n_ctx)
+                break;
+            cells += len;
+            longest = lg;
             j++;
         }
         if (j == i) {
@@ -741,8 +763,11 @@ static int fork_and_read(engine_t *e, const ivec_t *prompts, const ivec_t **cons
             size_t n = single[i + k];
             int32_t seq = (int32_t)(k + 1);
             llama_memory_seq_cp(mem, 0, seq, -1, -1);
+            size_t pad = pad_equal ? longest - (prompts[n].n - shared) : 0;
+            for (size_t q = 0; q < pad; q++)
+                plan_push(&p, e->pad_tok, (int32_t)(shared + q), seq, -1);
             for (size_t m = shared; m < prompts[n].n; m++)
-                plan_push(&p, prompts[n].v[m], (int32_t)m, seq, m + 1 == prompts[n].n ? (long)n : -1);
+                plan_push(&p, prompts[n].v[m], (int32_t)(m + pad), seq, m + 1 == prompts[n].n ? (long)n : -1);
         }
         rc = decode(e, &p, round_out, &ud, err, errlen);
         free(p.v);
@@ -831,7 +856,7 @@ int engine_session_tokens(engine_t *e, const segs_t *prefix, const item_t *items
     return rc;
 }
 
-int engine_score_many(engine_t *e, const segs_t *prefix, const item_t *items, size_t n,
+int engine_score_many(engine_t *e, bool pad_equal, const segs_t *prefix, const item_t *items, size_t n,
                       scored_t *out, char *err, size_t errlen)
 {
     if (n == 0)
@@ -851,7 +876,7 @@ int engine_score_many(engine_t *e, const segs_t *prefix, const item_t *items, si
     if (!rc)
         rc = prepare(e, prefix, items, n, prompts, &shared, err, errlen);
     if (!rc)
-        rc = fork_and_read(e, prompts, (const ivec_t **const *)cands, ncand, n, shared, out, err,
+        rc = fork_and_read(e, pad_equal, prompts, (const ivec_t **const *)cands, ncand, n, shared, out, err,
                            errlen);
     for (size_t i = 0; i < n; i++) {
         free(cands[i]);

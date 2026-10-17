@@ -53,7 +53,9 @@ const char *engine_name(const engine_t *e);
 bool engine_recurrent(const engine_t *e);
 
 /* Every fingerprint of one session; out[i].logprobs is malloc'd. */
-int engine_score_many(engine_t *e, const segs_t *prefix, const item_t *items, size_t n,
+/* pad_equal: pad every suffix of a round to its longest (one forward pass
+ * a round on a hybrid model; the prompts change by leading newlines). */
+int engine_score_many(engine_t *e, bool pad_equal, const segs_t *prefix, const item_t *items, size_t n,
                       scored_t *out, char *err, size_t errlen);
 /* The polygraph's split reading: the whole prompt on sequence 0 from an
  * empty cache, cut at `at` into two decodes; one-token labels only. */

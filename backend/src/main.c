@@ -724,7 +724,7 @@ static int polygraph(const char *file)
         return 1;
     }
     scored_t *fk = xcalloc(nq, sizeof *fk);
-    if (engine_score_many(eng, &prefix, items, nq, fk, err, sizeof err)) {
+    if (engine_score_many(eng, false, &prefix, items, nq, fk, err, sizeof err)) {
         fprintf(stderr, "error: %s\n", err);
         return 1;
     }

@@ -25,7 +25,9 @@ One turn of conversation, every word a decision of the engine.
    - **Widening.** If the circuit's first word has probability under 0.25,
      it is unsure, and the engine picks up to 6 more from the lexicon (in
      groups of 25, each with `(not listed)`).
-   - **The rerank.** One Choice, each option the reply's last 8 words with
+   - **The rerank.** The options are shuffled with a clock seed first: they
+     arrive ranked by the circuit, and the engine must not see that order.
+     One Choice, each option the reply's last 8 words with
      a candidate added, as English (jev-llm's rerank). The `step`
      variables about the reply so far go in the same request and feed the
      next word's inputs.
@@ -37,6 +39,8 @@ One turn of conversation, every word a decision of the engine.
      reward against +0.074).
    - **The example** is the engine's own choice, with its distribution
      over the shown words.
+   - **Every request** asks the engine for `pad_equal` (engine.md): a word's
+     whole step is one forward pass, 2.0 s instead of 6 to 10.
 4. **Requirements.** Each line of `restrictions.txt` is a Noul about the
    newest reply, named as such in the state ("The newest reply, the one to
    judge: ..."): the conversation holds earlier `Reply:` lines too, and a
