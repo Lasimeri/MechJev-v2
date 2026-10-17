@@ -262,7 +262,19 @@ static void say_turn(const char *reply, const json_t *rec)
             num(rec, "words"), jobj_get(rec, "length_planned")->s, num(rec, "lexicon"), num(rec, "speakable"),
             100 * num(ev, "agree"), 100 * num(nv, "agree"), 100 * num(np, "agree"),
             num(rec, "ms_per_word") / 1e3,
-            jobj_get(rec, "failed_requirement")->b ? "; failed a requirement: learned only which shown word the engine preferred" : "");
+            jobj_get(rec, "failed_requirement")->b ? "; failed a requirement (learned from the scores, not as a right answer)" : "");
+    /* each word with its per-token score: the change it made in the coherence */
+    const json_t *tr = jobj_get(rec, "trace");
+    sb_t s;
+    sb_init(&s);
+    for (size_t i = 0; tr && i < tr->n; i++) {
+        const json_t *p = jobj_get(tr->items[i], "pick"), *r = jobj_get(tr->items[i], "reward");
+        if (p && p->t == J_STR && r && r->t == J_NUM)
+            sb_printf(&s, " %s %+.2f", p->s, r->f);
+    }
+    if (s.n)
+        fprintf(stderr, "  per word:%s; coherence %.2f\n", s.s, num(rec, "coherence_final"));
+    sb_free(&s);
 }
 
 static int cmd_export(ctx_t *c, int argc, char **argv)
