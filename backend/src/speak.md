@@ -35,6 +35,11 @@ One turn of conversation, every word a decision of the engine.
    - **The example** is the engine's own choice, with its distribution
      over the shown words.
 4. **Requirements.** Each line of `restrictions.txt` is a Noul about the
+   newest reply, named as such in the state ("The newest reply, the one to
+   judge: ..."): the conversation holds earlier `Reply:` lines too, and a
+   bare "the reply" let the engine judge an older one. Measured on "Thank
+   you." in the same conversation: grammatical 0.0348, responds 0.7618,
+   no repetition 0.395 before; 0.9074, 0.656, 0.8605 after.
    finished reply. One below 0.5, or an empty reply, fails it: the turn's
    examples teach only which shown word the engine preferred, never that
    the word was right (Aster's judge, softened so a beginner can start).

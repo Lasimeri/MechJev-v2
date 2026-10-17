@@ -843,12 +843,20 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     if (cfg->nchecks && t) {
         sb_t s2;
         sb_init(&s2);
-        sb_printf(&s2, "%s\nReply: %s", state, *reply);
+        /* The reply judged by name: the conversation holds earlier "Reply:"
+         * lines too, and a bare "the reply" let the engine judge an older one
+         * (2026-10-17: "Thank you." scored 0.035 on "grammatical English"). */
+        sb_printf(&s2, "%s\n\nThe newest reply, the one to judge: ", state);
+        json_quote(&s2, *reply, strlen(*reply));
         json_t *cq = jobj();
         for (size_t i = 0; i < cfg->nchecks; i++) {
             json_t *q = jobj();
             jobj_set(q, "type", jstr("noul"));
-            jobj_set(q, "instructions", jstr(cfg->checks[i]));
+            sb_t ci;
+            sb_init(&ci);
+            sb_printf(&ci, "About the newest reply only: %s", cfg->checks[i]);
+            jobj_set(q, "instructions", jstr(ci.s));
+            sb_free(&ci);
             char id[24];
             snprintf(id, sizeof id, "c%zu", i);
             jobj_set(cq, id, q);
