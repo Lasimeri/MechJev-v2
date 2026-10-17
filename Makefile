@@ -35,9 +35,10 @@ $(B)/xks: $(ENGINE_OBJS)
 $(B)/json_roundtrip: backend/tests/json_roundtrip.c $(B)/json.o $(B)/util.o
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
-check: $(B)/json_roundtrip $(B)/learner_test ## Checks that need no model: JSON against serde_json, the learner, the front end's tests
+check: $(B)/json_roundtrip $(B)/learner_test $(B)/learner_test_asan ## Checks that need no model: JSON against serde_json, the learner, the front end's tests
 	@$(B)/json_roundtrip < backend/tests/json_cases.jsonl | cmp - backend/tests/json_cases.serde.out && echo "json: identical to serde_json on backend/tests/json_cases.jsonl"
 	@$(B)/learner_test
+	@ASAN_OPTIONS=detect_leaks=0 $(B)/learner_test_asan | tail -1 | sed 's/^/asan: /'
 	@cd frontend && cargo test --release --offline -q 2>&1 | grep -E "test result" | head -1
 
 serve: build ## Start the engine detached on XKS_BIND (loads the subject)
@@ -77,3 +78,8 @@ watch: frontend ## The TUI in tmux session jev2, opened in a Konsole window (wha
 
 mcp: frontend ## The MCP server on stdio (for claude mcp add)
 	frontend/target/release/mjev2 mcp
+
+# The learner test again under AddressSanitizer and UBSan: a stale write
+# into the lexicon (fixed 2026-10-17) corrupted the live learner's heap.
+$(B)/learner_test_asan: backend/tests/learner_test.c $(SRC)/learner.c $(SRC)/circuit.c $(SRC)/util.c $(SRC)/*.h | $(B)
+	$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -std=gnu11 -pthread -o $@ backend/tests/learner_test.c $(SRC)/learner.c $(SRC)/circuit.c $(SRC)/util.c -lm

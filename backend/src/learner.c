@@ -153,8 +153,14 @@ void free_words(char **w, size_t n)
 
 void learner_hear(learner_t *l, char **words, size_t n)
 {
-    for (size_t i = 0; i < n; i++)
-        l->v[lex_add(l, words[i])].heard++;
+    for (size_t i = 0; i < n; i++) {
+        /* the index first: lex_add can reallocate l->v, and `l->v[lex_add(...)]`
+         * leaves unsequenced whether l->v is read before the call. It was,
+         * and the live learner corrupted its heap when its lexicon crossed 64
+         * words (2026-10-17, malloc(): invalid next->prev_inuse). */
+        int32_t k = lex_add(l, words[i]);
+        l->v[k].heard++;
+    }
 }
 
 int learner_slot(learner_t *l, const char *name)

@@ -113,6 +113,29 @@ static void spread(const char *what, const double *x, int n)
 }
 int main(void)
 {
+    /* 0. hearing across the lexicon's growth: 300 new words, each heard
+     * once, crossing every reallocation (64, 128, 256). The live learner
+     * corrupted its heap at 64 (an unsequenced l->v[lex_add(...)]); under
+     * AddressSanitizer (make check runs this test so) a stale write fails. */
+    {
+        learner_t *g = learner_new(7);
+        size_t base = g->n;
+        for (int i = 0; i < 300; i++) {
+            char w[16];
+            snprintf(w, sizeof w, "word%d", i);
+            char *one[1] = {w};
+            learner_hear(g, one, 1);
+        }
+        bool ok = g->n == base + 300;
+        for (int i = 0; i < 300 && ok; i++) {
+            char w[16];
+            snprintf(w, sizeof w, "word%d", i);
+            int32_t k = lex_find(g, w);
+            ok = k >= 0 && g->v[k].heard == 1;
+        }
+        CHECK(ok, "hearing across the lexicon's growth lost or misplaced counts");
+        learner_free(g);
+    }
     /* 1. gates on bits against the truth tables: Table 1, ID = bits 00 01 10 11 */
     circuit_t c;
     int sizes[1] = {16};
