@@ -797,15 +797,19 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     if (cap > cfg->max_words)
         cap = cfg->max_words;
 
-    char **said = xcalloc(cap + 1, sizeof *said);
-    example_t *ex = xcalloc(cap + 1, sizeof *ex);
-    double *coh = xcalloc(cap + 2, sizeof *coh); /* coh[k]: the coherence of the first k words */
-    bool *have = xcalloc(cap + 2, sizeof *have);
+    /* The cap counts words; punctuation and the stop come free (a word or
+     * two is "Yes, I am." not "Yes, I": measured 2026-10-17, the cap cut the
+     * circuit alone off mid-reply). Room for a mark after every word. */
+    size_t room = 2 * cap + 2, words = 0;
+    char **said = xcalloc(room + 1, sizeof *said);
+    example_t *ex = xcalloc(room + 1, sizeof *ex);
+    double *coh = xcalloc(room + 2, sizeof *coh); /* coh[k]: the coherence of the first k words */
+    bool *have = xcalloc(room + 2, sizeof *have);
     size_t t = 0, nex = 0, widened = 0;
     json_t *trace = jarr();
     bool ended = false;
     int32_t prev = lex_find(l, START);
-    while (t < cap) {
+    while (words < cap && t < room) {
         double ts = now_ms();
         uint64_t seed = clock_seed();
         uint8_t bits[N_IN];
@@ -914,6 +918,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
             break;
         }
         said[t++] = l->v[said_word].word;
+        words += !is_punct(l->v[said_word].word);
         prev = said_word;
         if (cfg->on_word) {
             char *so_far = render_words(said, t);
@@ -1011,7 +1016,8 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     jobj_set(rec, "speakable", ju64(lex_speakable_count(l)));
     jobj_set(rec, "length_planned", jstr(LENGTHS[li]));
     jobj_set(rec, "stage_cap", ju64(stage));
-    jobj_set(rec, "words", ju64(t));
+    jobj_set(rec, "words", ju64(words));
+    jobj_set(rec, "tokens", ju64(t)); /* words and marks: what ms_per_word divides by */
     jobj_set(rec, "ended", jbool(ended));
     jobj_set(rec, "steps", ju64(nex));
     jobj_set(rec, "widened", ju64(widened));
