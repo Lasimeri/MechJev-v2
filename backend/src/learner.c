@@ -21,6 +21,10 @@ static const int LAYERS[] = {256, 256, OUT_BITS};
 #define RL_WEIGHT 1.0f /* the per-token reward term (RED), against the KL term's 1 */
 #define PREV_DROPOUT 0.5 /* passes trained with the word before blanked */
 #define TERN 0.33f     /* latent embedding to ternary: above +TERN 1, below -TERN -1 */
+#define MEM_SEED 0x48444D454D4F5259ull /* "HDMEMORY": the memory's own stream of the seed */
+#define MEM_EPOCHS 3     /* correction epochs a turn at most (the paper's MaxEpochs) */
+#define MEM_EPSILON 0.05 /* stop when fewer than this share of kept contexts are wrong */
+#define MEM_POSITIONS 10 /* positions with their own identifier; later ones share the last */
 
 static const unsigned POS_AT[POS_BITS] = {1, 2, 3, 5, 8, 12, 20, 30};
 
@@ -184,6 +188,7 @@ learner_t *learner_new(uint64_t seed)
     l->seed = seed;
     l->min_heard = 2;
     circuit_init(&l->circ, N_IN, N_LAYERS, LAYERS, seed);
+    hd_init(&l->mem, seed ^ MEM_SEED);
     /* Always there: the start (an input only), the end, the punctuation a
      * sentence needs. Every other word is acquired by hearing it. */
     const char *base[] = {START, END, ".", ",", "?", "!"};
@@ -204,6 +209,7 @@ void learner_free(learner_t *l)
     free(l->ix);
     free(l->replay);
     circuit_free(&l->circ);
+    hd_free(&l->mem);
     free(l);
 }
 
@@ -252,18 +258,56 @@ static bool candidate(const learner_t *l, int32_t i, bool allow_end)
     return allow_end || strcmp(l->v[i].word, END);
 }
 
-size_t learner_propose(const learner_t *l, const uint8_t *bits, int32_t *out, size_t k,
+/* Whether the memory has a say on word i: a word it holds, not a mark or
+ * the end. Without the reply's own words it cannot tell "after a word"
+ * from "after a mark", and on marks and the end it lost to the circuit
+ * (2026-10-17, 0.386 against 0.573); on words it held level (0.411 against
+ * 0.402). */
+static bool memory_speaks(const learner_t *l, size_t i, bool allow_end)
+{
+    return i < l->mem.n && l->mem.count[i] && candidate(l, (int32_t)i, allow_end) && !is_punct(l->v[i].word) &&
+           strcmp(l->v[i].word, END);
+}
+
+/* The memory's part of each candidate's score: mem_weight times its
+ * similarity less the mean over the words it has a say on, so only which
+ * words it prefers counts, not that contexts are alike at all (they share
+ * every variable's identifier). Every other candidate gets 0. */
+static void memory_scores(const learner_t *l, const hv_t *context, bool allow_end, float *out)
+{
+    double sum = 0;
+    size_t held = 0;
+    for (size_t i = 0; i < l->n; i++) {
+        out[i] = 0;
+        if (!memory_speaks(l, i, allow_end))
+            continue;
+        out[i] = (float)hd_sim(&l->mem, i, context);
+        sum += out[i];
+        held++;
+    }
+    float mean = held ? (float)(sum / (double)held) : 0;
+    for (size_t i = 0; i < l->n; i++)
+        if (memory_speaks(l, i, allow_end))
+            out[i] = l->mem_weight * (out[i] - mean);
+}
+
+size_t learner_propose(const learner_t *l, const uint8_t *bits, const hv_t *context, int32_t *out, size_t k,
                        bool allow_end, double *p_first)
 {
     uint8_t a[OUT_BITS];
     circuit_run(&l->circ, bits, a);
     float *sc = xmalloc((l->n ? l->n : 1) * sizeof *sc);
+    float *mem = NULL;
+    if (context && l->mem_weight > 0) {
+        mem = xmalloc((l->n ? l->n : 1) * sizeof *mem);
+        memory_scores(l, context, allow_end, mem);
+    }
     size_t m = 0;
     float mx = -INFINITY;
     for (size_t i = 0; i < l->n; i++) {
         if (!candidate(l, (int32_t)i, allow_end))
             continue;
-        sc[i] = score_bits(&l->v[i], a);
+        sc[i] = score_bits(&l->v[i], a) + (mem ? mem[i] : 0);
         mx = fmaxf(mx, sc[i]);
         size_t at = m;
         while (at > 0 && sc[out[at - 1]] < sc[i])
@@ -284,6 +328,7 @@ size_t learner_propose(const learner_t *l, const uint8_t *bits, int32_t *out, si
         *p_first = m ? exp((double)(sc[out[0]] - mx)) / z : 0;
     }
     free(sc);
+    free(mem);
     return m;
 }
 
@@ -568,6 +613,7 @@ int learner_save(const learner_t *l, const char *path, char *err, size_t errlen)
         fwrite(e->q, sizeof e->q, 1, f);
         W(e->top), W(e->said), W(e->reward), W(e->failed), W(e->id);
     }
+    hd_write(&l->mem, f); /* a short write shows in ferror below */
     int bad = ferror(f);
     if (fclose(f) || bad || rename(tmp.s, path)) {
         snprintf(err, errlen, "%s: %s", path, strerror(errno));
@@ -606,9 +652,9 @@ int learner_load(const char *path, learner_t **out, char *err, size_t errlen)
         return -1;
     }
     /* Another shape would be read with other wiring and other meanings for its
-     * inputs: refused, never converted. Version 2 is read as 3 with no
-     * rewards (the fields are additions; no meaning changed). */
-    if ((ver != LEARNER_VERSION && ver != 2) || nin != N_IN || outb != OUT_BITS || slots != VAR_SLOTS) {
+     * inputs: refused, never converted. Versions 2 and 3 are read as 4: 2 with no
+     * rewards, both with an empty memory (additions; no meaning changed). */
+    if ((ver != LEARNER_VERSION && ver != 2 && ver != 3) || nin != N_IN || outb != OUT_BITS || slots != VAR_SLOTS) {
         snprintf(err, errlen,
                  "%s: store version %u (%u inputs, %u outputs); this learner is version %u (%u, %u)",
                  path, ver, nin, outb, LEARNER_VERSION, (unsigned)N_IN, (unsigned)OUT_BITS);
@@ -620,6 +666,7 @@ int learner_load(const char *path, learner_t **out, char *err, size_t errlen)
     if (!R(l->seed) || !R(l->min_heard) || !R(l->turns) || !R(l->steps) || !R(l->trained) ||
         !R(l->emb_t) || !R(l->next_id) || !R(n))
         goto bad;
+    hd_init(&l->mem, l->seed ^ MEM_SEED);
     for (uint64_t i = 0; i < n; i++) {
         uint16_t len;
         if (!R(len))
@@ -665,6 +712,9 @@ int learner_load(const char *path, learner_t **out, char *err, size_t errlen)
         l->replay[l->nreplay - 1].id = e.id;
         l->next_id = keep;
     }
+    /* version 4 added the fast memory; an older store starts it empty */
+    if (ver >= 4 && hd_read(&l->mem, f))
+        goto bad;
     fclose(f);
     *out = l;
     return 0;
@@ -673,4 +723,136 @@ bad:
     learner_free(l);
     fclose(f);
     return -1;
+}
+
+/* ---- the fast memory (hdmem.h) --------------------------------------- */
+
+enum { KIND_SLOT = 1, KIND_POS, KIND_WORD, KIND_HEARD };
+
+void learner_context(const learner_t *l, const float *vars, unsigned pos, char **heard, size_t nheard,
+                     hv_t *out)
+{
+    hd_bundle_t *b = xmalloc(sizeof *b);
+    hd_bundle_init(b);
+    hv_t v, id;
+    /* each variable: its probability's level bound to its slot's name */
+    for (int i = 0; i < VAR_SLOTS; i++) {
+        if (!l->slot[i])
+            continue;
+        hd_level(&l->mem, vars[i], &v);
+        hd_id(&l->mem, KIND_SLOT, fnv1a(l->slot[i]), &id);
+        hd_xor(&v, &id);
+        hd_bundle_add(b, &v);
+    }
+    /* each distinct word the person said, bound to the role "heard" */
+    hv_t role;
+    hd_id(&l->mem, KIND_HEARD, 0, &role);
+    for (size_t i = 0; i < nheard; i++) {
+        if (is_punct(heard[i]))
+            continue;
+        bool again = false;
+        for (size_t j = 0; j < i && !again; j++)
+            again = !strcmp(heard[j], heard[i]);
+        if (again)
+            continue;
+        hd_id(&l->mem, KIND_WORD, fnv1a(heard[i]), &v);
+        hd_xor(&v, &role);
+        hd_bundle_add(b, &v);
+    }
+    hd_bundle_done(b, out);
+    free(b);
+    /* The whole bundle bound to an identifier per position, orthogonal to
+     * every other: each word keeps a prototype per position. As one bundled
+     * level among ~30 features the position was drowned out (2026-10-17,
+     * learner.md: agreement 0.301, against 0.398 bound). */
+    hd_id(&l->mem, KIND_POS, pos < MEM_POSITIONS - 1 ? pos : MEM_POSITIONS - 1, &id);
+    hd_xor(out, &id);
+}
+
+int32_t learner_recall(const learner_t *l, const hv_t *context, bool allow_end)
+{
+    int32_t best = -1;
+    double bs = -INFINITY;
+    for (size_t i = 0; i < l->n && i < l->mem.n; i++) {
+        if (!l->mem.count[i] || !candidate(l, (int32_t)i, allow_end))
+            continue;
+        double s = hd_sim(&l->mem, i, context);
+        if (s > bs)
+            bs = s, best = (int32_t)i;
+    }
+    return best;
+}
+
+double learner_recall_agree(const learner_t *l, const hv_t *contexts, const int32_t *labels, size_t n)
+{
+    size_t right = 0, asked = 0;
+    for (size_t i = 0; i < n; i++) {
+        int32_t r = learner_recall(l, &contexts[i], true);
+        if (r < 0)
+            continue;
+        right += r == labels[i];
+        asked++;
+    }
+    return asked ? (double)right / (double)asked : NAN;
+}
+
+memfit_t learner_memorize(learner_t *l, const hv_t *contexts, const int32_t *labels, size_t n)
+{
+    hdmem_t *h = &l->mem;
+    memfit_t r = {0};
+    hd_reserve(h, l->n);
+    for (size_t i = 0; i < n; i++)
+        if (labels[i] >= 0) {
+            hd_learn(h, (size_t)labels[i], &contexts[i]);
+            r.learned++;
+        }
+    /* Correction epochs (eq 7-8): predict with the prototypes as the epoch
+     * began, move the M of the true word toward each missed context and the
+     * predicted word's away, binarize at the epoch's end. */
+    bool *touched = xcalloc(h->n ? h->n : 1, sizeof *touched);
+    for (r.epochs = 0; r.epochs < MEM_EPOCHS && h->nreplay;) {
+        size_t wrong = 0;
+        for (size_t i = 0; i < h->nreplay; i++) {
+            const hd_example_t *e = &h->replay[i];
+            int32_t p = learner_recall(l, &e->key, true);
+            if (p < 0 || p == e->label || e->label < 0 || (size_t)e->label >= h->n)
+                continue;
+            hd_superpose(h, (size_t)e->label, &e->key, 1);
+            hd_superpose(h, (size_t)p, &e->key, -1);
+            touched[e->label] = touched[p] = true;
+            wrong++;
+        }
+        r.epochs++;
+        r.fit = 1.0 - (double)wrong / (double)h->nreplay;
+        for (size_t c = 0; c < h->n; c++)
+            if (touched[c]) {
+                hd_binarize(h, c);
+                touched[c] = false;
+            }
+        if (r.fit >= 1.0 - MEM_EPSILON)
+            break;
+    }
+    free(touched);
+    return r;
+}
+
+void learner_memory_reset(learner_t *l)
+{
+    hd_free(&l->mem);
+    hd_init(&l->mem, l->seed ^ MEM_SEED);
+}
+
+double learner_recall_margin(const learner_t *l, const hv_t *context)
+{
+    double s1 = -INFINITY, s2 = -INFINITY;
+    for (size_t i = 0; i < l->n && i < l->mem.n; i++) {
+        if (!l->mem.count[i] || !candidate(l, (int32_t)i, true))
+            continue;
+        double s = hd_sim(&l->mem, i, context);
+        if (s > s1)
+            s2 = s1, s1 = s;
+        else if (s > s2)
+            s2 = s;
+    }
+    return isinf(s2) ? NAN : s1 - s2;
 }

@@ -133,3 +133,57 @@ earned about +0.3 for beating the empty reply (whose coherence is about
 after turn, and the learner answered "Yes." to three different statements
 (2026-10-17, block 1). The baseline is computed from the replay at
 learning time, so the store does not change.
+
+## The fast memory (hdmem.md)
+
+The user's ask (2026-10-17): adapt faster, and answer more to the point.
+Two measured causes:
+
+- A turn's new examples are trained once, then the whole replay is
+  rehearsed uniformly for 3 s. At turn 92, with 387 examples kept, a new
+  turn is about 1% of the training.
+- The circuit's inputs hold nothing of what the person said: the engine's
+  variables, the word before, the position.
+
+So beside the circuit sits a memory after Khasia (SSRN 6459123): no
+gradient, a word learned from one context. Its context for a step
+(`learner_context`) is a majority bundle of every variable (its
+probability's level XOR its slot's identifier) and every distinct word the
+person said (its identifier XOR the role "heard"). The whole bundle is
+then bound to an identifier per position. **Never the reply's own words:**
+what follows what is not learned (the no-chain rule). A reply that passed
+every requirement is learned at once (`learner_memorize`): each step's
+context into its word's prototype, then correction epochs over the last
+4096 contexts.
+
+How the context was chosen: `learner memory-rebuild` replays the record
+(turns.jsonl) through the memory, and before each turn is learned it says
+what it would have chosen. Over the 47 passed taught turns (200 steps),
+against the engine's word:
+
+| predictor | all | words (95) | marks and the end (103) |
+| --- | --- | --- | --- |
+| memory, one flat bundle, the position one level in it | 0.301 | 0.200 | 0.396 |
+| memory, flat, the step variables as of this word | 0.265 | | |
+| memory, turn bundle XOR step bundle | 0.291 (0.327 as of this word) | | |
+| memory, bundle XOR a position identifier, position level kept | 0.398 (0.418 as of this word) | 0.411 | 0.386 |
+| **memory, bundle XOR a position identifier (kept)** | **0.403** | **0.432** | 0.376 |
+| the circuit (its own first word, before learning) | 0.490 | 0.402 | 0.573 |
+| the word most often said at that position so far | 0.461 | 0.432 | 0.490 |
+
+As one bundled level among ~30 features the position was drowned out;
+bound to an orthogonal identifier, each word keeps a prototype per
+position. On marks and the end the memory loses by construction: without
+the reply's own words it cannot tell "after a word" from "after a mark".
+On words it is level with the circuit and the position baseline. So it has
+a say on words only (`memory_speaks`), its score `MJ2_MEMORY` times its
+similarity less the mean over those words; and that weight is **0 by
+default** (it learns but does not speak) until a live A/B shows what it
+does. Its measured strength is recall from few examples (the test: 12 of
+12 from one context each, 12 of 12 through 10% noise); whether that makes
+the learner adapt faster on the real conversation is the A/B's question.
+
+"As of this word": the step variables a step sees were answered at the
+step before, about the reply one word shorter (the rerank asks them with
+its Choice, after the circuit has proposed). The record lets the rebuild
+try them as if asked first; live, that would cost a request per word.

@@ -8,6 +8,7 @@
  *    variable undoes it (the concept path carries it, not the word before);
  * 3. the relaxed and discrete circuits agree on held-out inputs (the rate);
  * 4. the exported C circuit, compiled, is bit-identical to the interpreter.
+ * 5. the fast memory (memory_tests).
  * The toy's words are English but the examples are artificial on purpose. */
 #define _GNU_SOURCE
 #include <stdbool.h>
@@ -88,7 +89,7 @@ static double shown_agree(learner_t *l, const example_t *ex, int n)
     for (int i = 0; i < n; i++) {
         uint8_t bits[N_IN];
         learner_inputs(l, ex[i].vars, ex[i].prev, ex[i].pos, ex[i].id * 0x9E3779B97F4A7C15ull, ABL_NONE, bits);
-        size_t m = learner_propose(l, bits, rank, l->n, true, NULL);
+        size_t m = learner_propose(l, bits, NULL, rank, l->n, true, NULL);
         for (size_t r = 0; r < m; r++) {
             bool shown = false;
             for (int k = 0; k < ex[i].n; k++)
@@ -111,6 +112,105 @@ static void spread(const char *what, const double *x, int n)
     }
     printf("%s %.3f  %.3f  %.3f\n", what, mean(x, n), lo, hi);
 }
+/* 5. The fast memory (hdmem.h; Khasia, SSRN 6459123): Lemma 1 holds
+ *    exactly; identifiers are near-orthogonal; a word learned from ONE
+ *    context is recalled for it, and through 10% noise; learning a new word
+ *    keeps every old one (no catastrophic forgetting); the person's words
+ *    move a context, partly; a store keeps the memory. */
+static void random_context(learner_t *l, uint64_t *s, hv_t *out)
+{
+    float vars[VAR_SLOTS];
+    for (int i = 0; i < VAR_SLOTS; i++)
+        vars[i] = (float)((splitmix64(s) >> 11) * 0x1.0p-53);
+    learner_context(l, vars, 0, NULL, 0, out);
+}
+
+static void memory_tests(void)
+{
+    learner_t *l = learner_new(7);
+    hdmem_t *h = &l->mem;
+    bool iso = true;
+    for (int i = 0; i < HD_LEVELS; i++)
+        for (int j = 0; j < HD_LEVELS; j++) {
+            size_t fi = (size_t)i * (HD_D / 2) / (HD_LEVELS - 1), fj = (size_t)j * (HD_D / 2) / (HD_LEVELS - 1);
+            iso &= hd_distance(&h->level[i], &h->level[j]) == (fi > fj ? fi - fj : fj - fi);
+        }
+    CHECK(iso, "level hypervectors are not isometric (Lemma 1)");
+    CHECK(hd_distance(&h->level[0], &h->level[HD_LEVELS - 1]) == HD_D / 2, "L_0 to L_last is not D/2");
+    hv_t a, b;
+    hd_id(h, 1, 0, &a);
+    hd_id(h, 1, 1, &b);
+    unsigned d = hd_distance(&a, &b);
+    /* D/2 within 6.6 sigma (sigma = sqrt(D)/2 = 45.3) */
+    CHECK(d > 3800 && d < 4392, "neighbouring identifiers are not near-orthogonal: %u of %d", d, HD_D);
+
+    const char *words[] = {"rain", "music", "walk", "book", "cold", "tea", "blue", "night", "home", "song", "cat", "sun"};
+    enum { NW = 12 };
+    for (int k = 0; k < 2; k++)
+        learner_hear(l, (char **)words, NW);
+    char name[32];
+    for (int i = 0; i < 24; i++) {
+        snprintf(name, sizeof name, "turn variable %d", i);
+        learner_slot(l, name);
+    }
+    hv_t ctx[NW + 1];
+    int32_t lab[NW + 1];
+    uint64_t s = 99;
+    for (int i = 0; i <= NW; i++) {
+        random_context(l, &s, &ctx[i]);
+        lab[i] = lex_find(l, words[i % NW]);
+    }
+    memfit_t fit = learner_memorize(l, ctx, lab, NW);
+    int right = 0, noisy = 0;
+    for (int i = 0; i < NW; i++) {
+        right += learner_recall(l, &ctx[i], false) == lab[i];
+        hv_t x = ctx[i];
+        for (int k = 0; k < HD_D / 10; k++) { /* 819 distinct-ish bit flips */
+            uint64_t bit = splitmix64(&s) % HD_D;
+            x.w[bit / 64] ^= 1ull << (bit % 64);
+        }
+        noisy += learner_recall(l, &x, false) == lab[i];
+    }
+    CHECK(right == NW, "one-shot recall: %d of %d", right, NW);
+    CHECK(noisy == NW, "one-shot recall through 10%% noise: %d of %d", noisy, NW);
+    printf("memory: %d words from one context each: recalled %d/%d, through 10%% noise %d/%d (fit %.2f, %zu "
+           "epochs)\n",
+           NW, right, NW, noisy, NW, fit.fit, fit.epochs);
+    /* a new context for an old word ("rain" again) and the old ones */
+    learner_memorize(l, &ctx[NW], &lab[NW], 1);
+    int kept = 0;
+    for (int i = 0; i <= NW; i++)
+        kept += learner_recall(l, &ctx[i], false) == lab[i];
+    CHECK(kept == NW + 1, "after one more context: %d of %d recalled", kept, NW + 1);
+
+    float vars[VAR_SLOTS];
+    for (int i = 0; i < VAR_SLOTS; i++)
+        vars[i] = 0.5f;
+    char *m1[] = {"do", "you", "like", "music"}, *m2[] = {"do", "you", "like", "rain"};
+    hv_t c0, c1, c2;
+    learner_context(l, vars, 0, NULL, 0, &c0);
+    learner_context(l, vars, 0, m1, 4, &c1);
+    learner_context(l, vars, 0, m2, 4, &c2);
+    unsigned d12 = hd_distance(&c1, &c2), d01 = hd_distance(&c0, &c1);
+    CHECK(d12 > 0 && d12 < HD_D / 2 && d01 > 0 && d01 < HD_D / 2,
+          "the person's words should move the context, partly: %u and %u of %d", d12, d01, HD_D);
+
+    char err[256];
+    const char *path = "backend/build/learner_test_memory.store";
+    CHECK(!learner_save(l, path, err, sizeof err), "save: %s", err);
+    learner_t *r = NULL;
+    CHECK(!learner_load(path, &r, err, sizeof err), "load: %s", err);
+    if (r) {
+        bool same = r->mem.n == l->mem.n && r->mem.nreplay == l->mem.nreplay;
+        for (int i = 0; same && i <= NW; i++)
+            same = hd_sim(&r->mem, (size_t)lab[i], &ctx[i]) == hd_sim(&l->mem, (size_t)lab[i], &ctx[i]) &&
+                   learner_recall(r, &ctx[i], false) == lab[i];
+        CHECK(same, "the reloaded memory differs");
+        learner_free(r);
+    }
+    learner_free(l);
+}
+
 int main(void)
 {
     /* 0. hearing across the lexicon's growth: 300 new words, each heard
@@ -291,6 +391,7 @@ int main(void)
     free(got);
     free(want);
     learner_free(l);
+    memory_tests();
     printf("%s\n", fails ? "learner_test: FAILED" : "learner_test: all checks passed");
     return fails ? 1 : 0;
 }

@@ -3,6 +3,7 @@
 #include "speak.h"
 
 #include <ctype.h>
+#include <errno.h>
 #include <math.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -521,6 +522,24 @@ static bool allowed(const learner_t *l, char **said, size_t t, int32_t wi)
     return !repeats(said, t, w);
 }
 
+/* The words the person said that may come next and are not shown yet,
+ * added to cands (up to MAX_OPTS). Returns the new count. */
+static size_t offer_heard(const learner_t *l, char **said, size_t t, char **heard, size_t nh, int32_t *cands,
+                          size_t nc)
+{
+    for (size_t i = 0; i < nh && nc < MAX_OPTS; i++) {
+        int32_t wi = lex_find(l, heard[i]);
+        if (wi < 0 || is_punct(heard[i]) || !allowed(l, said, t, wi))
+            continue;
+        bool shown = false;
+        for (size_t j = 0; j < nc && !shown; j++)
+            shown = cands[j] == wi;
+        if (!shown)
+            cands[nc++] = wi;
+    }
+    return nc;
+}
+
 /* The option shown for word wi after said[0..t): the last `window` words
  * of the reply with it added, as English. */
 static char *continuation(const learner_t *l, const speak_cfg_t *cfg, char **said, size_t t, int32_t wi)
@@ -893,7 +912,6 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     size_t lex_before = l->n;
     if (!cfg->probe) /* a probe measures, it changes nothing */
         learner_hear(l, heard, nh);
-    free_words(heard, nh);
     if (!cfg->probe)
         l->turns++;
     char *state = conversation(h, person);
@@ -917,6 +935,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     json_t *ans = ask(cfg, state, qs, &resp, &cost, err, errlen);
     if (!ans) {
         free(state);
+        free_words(heard, nh);
         return -1;
     }
     json_t *turn_vars = jobj();
@@ -936,6 +955,8 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     size_t room = 2 * (cap + 4) + 2, words = 0;
     char **said = xcalloc(room + 1, sizeof *said);
     example_t *ex = xcalloc(room + 1, sizeof *ex);
+    hv_t *ctxs = xcalloc(room + 1, sizeof *ctxs); /* each example's context, for the memory */
+    int32_t *labels = xcalloc(room + 1, sizeof *labels);
     double *coh = xcalloc(room + 2, sizeof *coh); /* coh[k]: the coherence of the first k words */
     bool *have = xcalloc(room + 2, sizeof *have);
     size_t t = 0, nex = 0, widened = 0;
@@ -949,10 +970,12 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
         uint64_t seed = clock_seed();
         uint8_t bits[N_IN];
         learner_inputs(l, slots, prev, (unsigned)t, seed, ABL_NONE, bits);
+        hv_t ctx;
+        learner_context(l, slots, (unsigned)t, heard, nh, &ctx);
         int32_t ranked[MAX_OPTS * 2], cands[MAX_OPTS];
         double p_first = 0;
         bool allow_end = t > 0 && sentence_end(said[t - 1]);
-        size_t got = learner_propose(l, bits, ranked, MAX_OPTS * 2, allow_end, &p_first);
+        size_t got = learner_propose(l, bits, &ctx, ranked, MAX_OPTS * 2, allow_end, &p_first);
         size_t nr = 0; /* the circuit's ranking, allowed words only */
         for (size_t i = 0; i < got; i++)
             if (allowed(l, said, t, ranked[i]))
@@ -984,12 +1007,22 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
                 widened += nw > 0;
             }
         }
+        /* The person's own words, offered whatever the circuit ranks: in 20
+         * turns (2026-10-17) 24 of the 34 content words the person used were
+         * never shown, so the engine never had the choice of them. A word
+         * heard only now is offered too: the person has just used it. The
+         * engine still decides. */
+        size_t heard_from = nc;
+        if (!cfg->alone)
+            nc = offer_heard(l, said, t, heard, nh, cands, nc);
         json_t *step = jobj();
         jobj_set(step, "t", ju64(t));
         jobj_set(step, "seed_inputs", ju64(seed));
         jobj_set(step, "circuit_top1", top1 >= 0 ? jstr(l->v[top1].word) : jnull());
         jobj_set(step, "circuit_p_first", jf64(round(p_first * 1e4) / 1e4));
         jobj_set(step, "shown_all", jbool(everything));
+        int32_t mem_top = learner_recall(l, &ctx, allow_end);
+        jobj_set(step, "memory_top", mem_top >= 0 ? jstr(l->v[mem_top].word) : jnull());
         if (!nc) {
             jobj_set(step, "pick", jnull());
             jobj_set(step, "note", jstr("no word it knows may come here"));
@@ -1031,9 +1064,12 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
                 st.top = st.pick; /* the decision the circuit learns: the coherent one */
             jobj_set(step, "rerank_top", jstr(l->v[rerank_top].word));
             jobj_set(step, "lookahead", look);
-            bool from_circuit = false;
-            for (size_t i = 0; i < own; i++)
-                from_circuit |= cands[i] == st.top;
+            size_t at_cand = nc; /* where the decided word was among the shown */
+            for (size_t i = nc; i-- > 0;)
+                if (cands[i] == st.top)
+                    at_cand = i;
+            ctxs[nex] = ctx;
+            labels[nex] = st.top;
             example_t *e = &ex[nex++];
             memcpy(e->vars, used, sizeof e->vars);
             e->prev = prev;
@@ -1052,7 +1088,10 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
             jobj_set(step, "seed_draw", ju64(st.seed));
             jobj_set(step, "pick", jstr(l->v[st.pick].word));
             jobj_set(step, "engine_top", jstr(l->v[st.top].word));
-            jobj_set(step, "from", jstr(from_circuit ? "circuit" : everything ? "vocabulary" : "widened"));
+            jobj_set(step, "from", jstr(at_cand < own ? "circuit"
+                                        : at_cand >= heard_from && at_cand < nc ? "heard"
+                                        : everything ? "vocabulary"
+                                                     : "widened"));
             jobj_set(step, "p", jf64(st.p_pick));
             jobj_set(step, "p_top", jf64(st.p_top));
             jobj_set(step, "options", st.shown);
@@ -1150,6 +1189,15 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     evalres_t no_prev = learner_eval(l, ex, nex, ABL_PREV);
     double tl = now_ms();
     size_t passes = cfg->learn && !cfg->alone ? learner_learn(l, ex, nex, cfg->train_ms, 0) : 0;
+    /* The fast memory: what it would have said, measured before it learns;
+     * then a reply that passed every requirement is learned at once (a
+     * failed one is not: the memory keeps what it is given). */
+    double mem_agree = learner_recall_agree(l, ctxs, labels, nex);
+    memfit_t mfit = {0};
+    double tm = now_ms();
+    if (cfg->learn && !cfg->alone && !failed)
+        mfit = learner_memorize(l, ctxs, labels, nex);
+    double mem_ms = now_ms() - tm;
     double train_ms = now_ms() - tl;
 
     json_t *rec = jobj();
@@ -1176,6 +1224,19 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     jobj_set(rec, "train_passes", ju64(passes));
     jobj_set(rec, "train_ms", jf64(round(train_ms)));
     jobj_set(rec, "replay", ju64(l->nreplay));
+    json_t *mj = jobj();
+    size_t held = 0;
+    for (size_t i = 0; i < l->mem.n; i++)
+        held += l->mem.count[i] > 0;
+    jobj_set(mj, "weight", jf64(l->mem_weight));
+    jobj_set(mj, "agree_before", isnan(mem_agree) ? jnull() : jf64(round(mem_agree * 1e4) / 1e4));
+    jobj_set(mj, "learned", ju64(mfit.learned));
+    jobj_set(mj, "epochs", ju64(mfit.epochs));
+    jobj_set(mj, "fit", mfit.epochs ? jf64(round(mfit.fit * 1e4) / 1e4) : jnull());
+    jobj_set(mj, "words", ju64(held));
+    jobj_set(mj, "contexts", ju64(l->mem.nreplay));
+    jobj_set(mj, "ms", jf64(round(mem_ms)));
+    jobj_set(rec, "memory", mj);
     jobj_set(rec, "engine_calls", ju64(cost.calls));
     jobj_set(rec, "engine_tokens", ju64(cost.tokens));
     jobj_set(rec, "engine_ms", jf64(round(cost.ms)));
@@ -1189,6 +1250,9 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
         history_add(h, person, *reply);
     free(said);
     free(ex);
+    free(ctxs);
+    free(labels);
+    free_words(heard, nh);
     free(coh);
     free(have);
     free(state);
@@ -1198,8 +1262,149 @@ fail:
     json_free(turn_vars);
     free(said);
     free(ex);
+    free(ctxs);
+    free(labels);
+    free_words(heard, nh);
     free(coh);
     free(have);
     free(state);
     return -1;
+}
+
+/* ---- the memory rebuilt from the record -------------------------------- */
+
+/* vars_read the other way: a record's variables, by their text, into the
+ * slots. */
+static void vars_apply(const speak_cfg_t *cfg, bool step, const json_t *seen, float *slots)
+{
+    for (size_t i = 0; i < cfg->nvars; i++) {
+        const var_t *v = &cfg->vars[i];
+        const json_t *a = v->step == step ? jobj_get(seen, v->text) : NULL;
+        if (!a)
+            continue;
+        if (!v->choice && a->t == J_NUM)
+            slots[v->slot] = (float)a->f;
+        for (size_t k = 0; v->choice && k < v->nopts; k++) {
+            const json_t *p = jobj_get(a, v->opts[k]);
+            if (p && p->t == J_NUM)
+                slots[v->slot + (int)k] = (float)p->f;
+        }
+    }
+}
+
+static int cmp_double(const void *a, const void *b)
+{
+    double x = *(const double *)a, y = *(const double *)b;
+    return x < y ? -1 : x > y;
+}
+
+int speak_memory_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns_path, json_t **report,
+                         char *err, size_t errlen)
+{
+    FILE *f = fopen(turns_path, "r");
+    if (!f) {
+        snprintf(err, errlen, "%s: %s", turns_path, strerror(errno));
+        return -1;
+    }
+    double t0 = now_ms();
+    learner_memory_reset(l);
+    char *line = NULL;
+    size_t cap = 0, turns = 0, steps = 0, tens_right = 0, tens_asked = 0, right_all = 0, asked_all = 0;
+    size_t right_word = 0, asked_word = 0; /* labels that are words, not marks or the end */
+    size_t nmargin = 0, capmargin = 0;
+    double *margin = NULL;
+    json_t *tens = jarr();
+    ssize_t len;
+    while ((len = getline(&line, &cap, f)) > 0) {
+        char perr[128];
+        json_t *r = json_parse(line, (size_t)len, perr, sizeof perr);
+        const json_t *mode = r ? jobj_get(r, "mode") : NULL, *failed = r ? jobj_get(r, "failed_requirement") : NULL;
+        const json_t *trace = r ? jobj_get(r, "trace") : NULL, *person = r ? jobj_get(r, "person") : NULL;
+        if (!r || !mode || mode->t != J_STR || strcmp(mode->s, "taught") || !failed || failed->t != J_BOOL ||
+            failed->b || !trace || trace->t != J_ARR || !person || person->t != J_STR) {
+            json_free(r);
+            continue;
+        }
+        float slots[VAR_SLOTS];
+        for (int i = 0; i < VAR_SLOTS; i++)
+            slots[i] = 0.5f;
+        vars_apply(cfg, false, jobj_get(r, "turn_vars"), slots);
+        char **heard;
+        size_t nh = split_words(person->s, &heard);
+        hv_t *ctxs = xcalloc(trace->n + 1, sizeof *ctxs);
+        int32_t *labels = xcalloc(trace->n + 1, sizeof *labels);
+        size_t n = 0;
+        for (size_t k = 0; k < trace->n; k++) {
+            const json_t *st = trace->items[k], *tt = jobj_get(st, "t");
+            const json_t *w = jobj_get(st, "engine_top");
+            if (!w || w->t != J_STR)
+                w = jobj_get(st, "pick");
+            int32_t wi = w && w->t == J_STR ? lex_find(l, w->s) : -1;
+            if (wi >= 0 && tt && tt->t == J_NUM) {
+                learner_context(l, slots, (unsigned)tt->u, heard, nh, &ctxs[n]);
+                labels[n++] = wi;
+            }
+            /* the step's answers about the reply so far feed the next word
+             * (as live: a step sees the answers the step before was given) */
+            vars_apply(cfg, true, jobj_get(st, "reply_vars"), slots);
+        }
+        for (size_t k = 0; k < n; k++) {
+            int32_t p = learner_recall(l, &ctxs[k], true);
+            if (p < 0)
+                continue;
+            size_t ok = p == labels[k];
+            tens_right += ok, right_all += ok;
+            tens_asked++, asked_all++;
+            if (!is_punct(l->v[labels[k]].word) && strcmp(l->v[labels[k]].word, END))
+                right_word += ok, asked_word++;
+            double m = learner_recall_margin(l, &ctxs[k]);
+            if (!isnan(m)) {
+                if (nmargin == capmargin) {
+                    capmargin = capmargin ? capmargin * 2 : 256;
+                    margin = xrealloc(margin, capmargin * sizeof *margin);
+                }
+                margin[nmargin++] = m;
+            }
+        }
+        learner_memorize(l, ctxs, labels, n);
+        steps += n;
+        turns++;
+        if (turns % 10 == 0) {
+            jarr_push(tens, tens_asked ? jf64(round(1e4 * (double)tens_right / (double)tens_asked) / 1e4) : jnull());
+            tens_right = tens_asked = 0;
+        }
+        free(ctxs);
+        free(labels);
+        free_words(heard, nh);
+        json_free(r);
+    }
+    free(line);
+    fclose(f);
+    if (tens_asked)
+        jarr_push(tens, jf64(round(1e4 * (double)tens_right / (double)tens_asked) / 1e4));
+    qsort(margin, nmargin, sizeof *margin, cmp_double);
+    json_t *o = jobj(), *mg = jobj();
+    jobj_set(o, "turns", ju64(turns));
+    jobj_set(o, "steps", ju64(steps));
+    jobj_set(o, "agree_before_learning", asked_all ? jf64(round(1e4 * (double)right_all / (double)asked_all) / 1e4) : jnull());
+    jobj_set(o, "agree_by_ten_turns", tens);
+    jobj_set(o, "agree_on_words", asked_word ? jf64(round(1e4 * (double)right_word / (double)asked_word) / 1e4) : jnull());
+    jobj_set(o, "agree_on_marks_and_end",
+             asked_all > asked_word ? jf64(round(1e4 * (double)(right_all - right_word) / (double)(asked_all - asked_word)) / 1e4) : jnull());
+    jobj_set(o, "asked_words", ju64(asked_word));
+    for (size_t q = 0; q < 3 && nmargin; q++) {
+        static const char *names[] = {"p10", "p50", "p90"};
+        static const double at[] = {0.1, 0.5, 0.9};
+        jobj_set(mg, names[q], jf64(round(1e4 * margin[(size_t)(at[q] * (double)(nmargin - 1))]) / 1e4));
+    }
+    jobj_set(o, "margin_first_second", mg);
+    size_t held = 0;
+    for (size_t i = 0; i < l->mem.n; i++)
+        held += l->mem.count[i] > 0;
+    jobj_set(o, "words", ju64(held));
+    jobj_set(o, "contexts", ju64(l->mem.nreplay));
+    jobj_set(o, "ms", jf64(round(now_ms() - t0)));
+    free(margin);
+    *report = o;
+    return 0;
 }

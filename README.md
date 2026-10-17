@@ -116,6 +116,9 @@ variables win:
 | `XKS_SYSTEM_FILE` | unset | a file's text ahead of the engine's system text |
 | `MJ2_TEMP`, `MJ2_TOP_K`, `MJ2_TOP_P`, `MJ2_MIN_P`, `MJ2_REPEAT_PENALTY` | 0.5, 75, 0.95, 0.05, 1.2 | how each word is drawn from the engine's distribution |
 | `MJ2_MIN_HEARD` | `2` | times a word is heard before it may be said |
+| `MJ2_LOOKAHEAD` | `3` | the engine's best words scored for coherence before one is said (0: its first is said) |
+| `MJ2_MEMORY` | `0` | the fast memory's weight in a word's score (0: it learns but does not speak) |
+| `MJ2_PROBE_REPEATS` | `3` | times `learner probe` asks each question |
 | `MJ2_VARS`, `MJ2_CHECKS` | `variables.txt`, `restrictions.txt` | the variables and the requirements |
 | `MJ2_DATA` | `~/.local/share/mechjev-v2` | the learner's data |
 
@@ -133,15 +136,18 @@ variables win:
    - **Proposal.** While everything the learner can say fits in one Choice
      (24 words), the engine is shown all of it, ranked by the circuit.
      Past that, the circuit proposes its 8 best and the engine adds its 10
-     best from the whole vocabulary. The options are shuffled with a clock
-     seed, so the engine never sees the circuit's ranking.
+     best from the whole vocabulary. The words the person just said are
+     always offered too: before, 24 of 34 content words they used were
+     never shown. The options are shuffled with a clock seed, so the engine
+     never sees the circuit's ranking.
    - **Choice.** The engine chooses among them as continuations of the
      reply: one Choice, with the `step` variables about the reply so far
      in the same request.
-   - **The word said** is the most likely one after the sampling settings
-     above (the user's choice), the clock seed breaking exact ties;
-     `MJ2_DRAW=sample` draws from the distribution instead.
-   - **The example.** The engine's own choice, with its distribution, is
+   - **The word said** (the coherence lookahead, the user's choice): the
+     engine's 3 best after the sampling settings above are scored for how
+     good a start each makes, and the best is said. After a sentence ends,
+     the reply stops when no word makes it read better as a whole.
+   - **The example.** That decision, with the engine's distribution, is
      the example the circuit learns from.
 4. **Score each word.** The engine scores the coherence of the reply after
    every word; a word's reward is the change it made (RED, arXiv:2411.08302),
@@ -159,6 +165,12 @@ variables win:
    (replies that passed), and each word's per-token reward against the
    mean at its position. Half the training passes blank the word before
    (input dropout), so the circuit cannot lean on it alone.
+7. **Remember.** A reply that passed is also learned at once by the fast
+   memory (after Khasia, SSRN 6459123): no gradient, each step's context
+   (the variables, the position, the person's words, never the reply's own
+   words) superposed into its word's prototype, then corrected where it
+   would have chosen another word. It is measured every turn; it speaks
+   only when `MJ2_MEMORY` is above 0.
 
 The details are in the sibling `.md` of each source file in `backend/src/`.
 
@@ -224,10 +236,19 @@ is not an answer.
   GPU only.
 - **Cost per word** (4 to 5 s on the live learner) is measured on
   single turns, not yet interleaved against a baseline.
-- **Acquisition** is at its first dozen turns: the circuit's own word
-  matches the engine's on 0 to 75% of a turn, and whether it leans on the
-  variables rather than the word before is not settled yet (the measures
-  are in every row of `curves.jsonl`).
+- **Acquisition** is early (about 100 turns): before learning a turn, the
+  circuit's first word is the engine's on 0.490 of the steps, against
+  0.461 for the word most often said at that position. The fast memory
+  gets 0.403 (0.432 on words, level with both); whether it makes the
+  learner adapt faster is an A/B not run yet, so it does not speak by
+  default.
+- **Replies end at the first sentence.** In block 6, at 11 points where
+  the reply could stop, it stopped 7 times: a one-word continuation is
+  unfinished, so it never reads better as a whole than "Yes." does. That
+  leaves no room for anything about what the person said.
+- **The step variables arrive a word late.** A step sees the answers the
+  step before was given, about the reply one word shorter; asking first
+  would cost a request per word.
 
 ## Where the ideas come from
 
@@ -237,7 +258,7 @@ is not an answer.
 | [xucian/talktojev](https://github.com/xucian/talktojev), "Generation is Classification" (doi:10.5281/zenodo.22940945) | choosing at several grains: how much to say, then each word; checks after the reply |
 | [Aster, "An LLM Made from Logic Gates"](https://www.asterlab.ai/research/an_llm_made_from_logic_gates) | a language model entirely of circuits that compile to C: tied embeddings added or subtracted at the output, a fixed look at the token before, training judged against a growing list of restrictions |
 | Petersen, Borgelt, Kuehne, Deussen, "Deep Differentiable Logic Gate Networks" (NeurIPS 2022, arXiv:2210.08277) | the circuit itself: the 16 relaxed gates, their training, their discretization |
-| [VladimerKhasia/booleanclass](https://github.com/VladimerKhasia/booleanclass) (doi:10.5281/zenodo.19170384) | learning in Boolean space without forgetting: bits, XOR and popcount, few-shot additions |
+| [VladimerKhasia/booleanclass](https://github.com/VladimerKhasia/booleanclass) (doi:10.5281/zenodo.19170384) and its paper, Khasia, "Backpropagation-Free Continual Learning in Boolean Space for Extreme Edge Intelligence" (SSRN 6459123, 2026) | the fast memory: level hypervectors, XOR binding, majority bundling, class prototypes by superposition, error-driven correction, recall by Hamming distance |
 | arXiv:2405.15658 (HDC for referring segmentation) | the paper is vision-language segmentation, not hyperdimensional computing; taken from it: decoding at several grains, and a count of how much |
 | [TypeSafe AI's Jev](https://typesafe.ai) and its system-one-adapter | the wire format and the confidence formulas |
 

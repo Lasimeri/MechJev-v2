@@ -93,3 +93,23 @@ answers the variables (its perception of the conversation and of the reply
 so far) and judges the requirements, but chooses no word. Nothing is
 learned. The words are the circuit's own first word at each step, so
 this shows what it has acquired.
+
+## The person's words, offered
+
+Every step in a taught turn also offers the engine the words the person
+just said that may come next and are not shown yet (`offer_heard`), up to
+24 options in all, a word heard only now included (the person has just
+used it). In blocks 5 and 6 (20 turns) the person used 34 content words;
+19 were speakable, 10 were ever shown, 4 were said; widen added a word in
+5 of 88 steps (its groups answer "not listed" for a word that cannot come
+next yet). The trace marks a word decided from these as `from: heard`.
+
+## The fast memory in a turn
+
+Each step's context (`learner_context`: the variables as the circuit saw
+them, the position, the person's words) goes to `learner_propose`, which
+adds the memory's score when `MJ2_MEMORY` > 0; the trace's `memory_top` is
+the memory's own word. After the requirements, the record's `memory` says
+what the memory would have chosen before learning (`agree_before`), and a
+reply that passed every requirement is learned (`learned`, `epochs`,
+`fit`). `speak_memory_rebuild` makes it again from turns.jsonl.

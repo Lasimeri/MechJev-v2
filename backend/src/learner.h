@@ -17,8 +17,9 @@
 #include <stdint.h>
 
 #include "circuit.h"
+#include "hdmem.h"
 
-#define LEARNER_VERSION 3u
+#define LEARNER_VERSION 4u
 #define VAR_SLOTS 64 /* variable inputs; unused slots read 0.5 */
 #define CODE_IN 32   /* bits of the previous word's code fed in */
 #define POS_BITS 8   /* position thermometer: 1 2 3 5 8 12 20 30 */
@@ -64,6 +65,8 @@ typedef struct {
     example_t *replay;
     size_t nreplay, capreplay;
     uint64_t turns, steps, trained, emb_t, next_id;
+    hdmem_t mem;      /* the fast memory: contexts to words, no gradient (hdmem.h) */
+    float mem_weight; /* its share of a word's score; 0: off (configuration, not stored) */
 } learner_t;
 
 /* What one evaluation pass over examples measured. */
@@ -101,9 +104,10 @@ int learner_slot(learner_t *l, const char *name);
  * previous word's code, the position. */
 void learner_inputs(const learner_t *l, const float *vars, int32_t prev, unsigned pos,
                     uint64_t seed, ablation_t abl, uint8_t *bits);
-/* The k best speakable words for these inputs, by the discrete circuit,
+/* The k best speakable words for these inputs, by the discrete circuit and
+ * (with a context and a mem_weight) the fast memory,
  * and the softmax probability of the first (how sure it is). */
-size_t learner_propose(const learner_t *l, const uint8_t *bits, int32_t *out, size_t k,
+size_t learner_propose(const learner_t *l, const uint8_t *bits, const hv_t *context, int32_t *out, size_t k,
                        bool allow_end, double *p_first);
 /* Learn a turn's examples (a failed one only the engine's preference among the
  * words shown, never that its word was right), then rehearse the replay
@@ -113,5 +117,30 @@ size_t learner_propose(const learner_t *l, const uint8_t *bits, int32_t *out, si
 size_t learner_learn(learner_t *l, const example_t *ex, size_t n, double budget_ms, size_t max_passes);
 /* Measure examples (prequentially: before learning them). */
 evalres_t learner_eval(const learner_t *l, const example_t *ex, size_t n, ablation_t abl);
+
+/* The fast memory's context for a step: the variables, the position and
+ * the person's words, bundled (hdmem.h). Never the reply's own words: what
+ * follows what is not learned. */
+void learner_context(const learner_t *l, const float *vars, unsigned pos, char **heard, size_t nheard,
+                     hv_t *out);
+/* What one turn did to the memory. */
+typedef struct {
+    size_t learned; /* contexts superposed */
+    size_t epochs;  /* correction epochs run */
+    double fit;     /* share of the kept contexts it predicted right, in the last epoch */
+} memfit_t;
+/* The paper's Algorithm 1 for new data: each context superposed into its
+ * word's prototype, then correction epochs over the kept contexts (eq
+ * 7-8) until 95% are right or 3 epochs have run. */
+memfit_t learner_memorize(learner_t *l, const hv_t *contexts, const int32_t *labels, size_t n);
+/* The memory's own word for each context (-1: it holds nothing yet), and
+ * the share it got right, before learning them; NAN when it holds nothing. */
+int32_t learner_recall(const learner_t *l, const hv_t *context, bool allow_end);
+double learner_recall_agree(const learner_t *l, const hv_t *contexts, const int32_t *labels, size_t n);
+/* How far the memory's first word is ahead of its second, in similarity
+ * (NAN while it holds fewer than two words): what mem_weight scales. */
+double learner_recall_margin(const learner_t *l, const hv_t *context);
+/* The memory emptied (the levels and identifiers stay: they are the seed's). */
+void learner_memory_reset(learner_t *l);
 
 #endif

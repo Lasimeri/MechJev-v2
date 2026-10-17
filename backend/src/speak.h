@@ -80,6 +80,16 @@ char *render_words(char **w, size_t n);
 
 /* One turn: the reply in *reply, the turn's record (a row of the curve and
  * the per-word trace) in *record. 0 on success. */
+/* The fast memory made again from the record (turns.jsonl), in order: each
+ * taught turn that passed every requirement, each step's context as it was
+ * (the turn's variables, the reply variables the step before answered, the
+ * position, the person's words) and the word decided. Before a turn is
+ * learned the memory says what it would have chosen: *report holds that
+ * prequential agreement, by tens of turns, and the margins its weight
+ * scales. */
+int speak_memory_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns_path, json_t **report,
+                         char *err, size_t errlen);
+
 int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *person,
                char **reply, json_t **record, char *err, size_t errlen);
 

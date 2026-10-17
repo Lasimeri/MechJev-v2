@@ -31,6 +31,9 @@
 #include "util.h"
 
 #define DEFAULT_SEED 20261017ull
+/* The fast memory's weight in a word's score (MJ2_MEMORY; 0: it learns but
+ * does not speak). Set from the rebuild's margins: see learner_main.md. */
+#define DEFAULT_MEM_WEIGHT 0.0
 
 typedef struct {
     char *dir, *store, *curves, *history, *turns; /* turns: whole records, the per-word trace kept */
@@ -203,6 +206,9 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
         c->cfg.lookahead = (size_t)strtoul(v, NULL, 10);
     if ((v = getenv("MJ2_DRAW")) && *v)
         s->ties_only = strcmp(v, "sample") != 0; /* sample: drawn from the distribution */
+    c->l->mem_weight = (float)DEFAULT_MEM_WEIGHT;
+    if ((v = getenv("MJ2_MEMORY")) && *v)
+        c->l->mem_weight = strtof(v, NULL);
     if ((v = getenv("MJ2_TOP_K")) && *v)
         s->top_k = atoi(v);
     load_checks(&c->cfg);
@@ -764,6 +770,7 @@ static void usage(void)
           "  learner stats               what it knows\n"
           "  learner export FILE.c       the discrete circuit as C\n"
           "  learner probe               the fixed questions to the circuit alone (probes.jsonl)\n"
+          "  learner memory-rebuild      the fast memory made again from turns.jsonl (prints its agreement)\n"
           "  learner serve [--bind B]    the HTTP API (default 127.0.0.1:8092)\n"
           "  learner reset --yes         forget everything\n"
           "The engine (xks) must be up: make serve.\n",
@@ -834,6 +841,19 @@ int main(int argc, char **argv)
         }
         if (!rc)
             json_free(rows);
+    } else if (!strcmp(cmd, "memory-rebuild")) {
+        json_t *rep = NULL;
+        rc = speak_memory_rebuild(c.l, &c.cfg, c.turns, &rep, err, sizeof err) || learner_save(c.l, c.store, err, sizeof err) ? 1 : 0;
+        if (rc)
+            fprintf(stderr, "error: %s\n", err);
+        if (rep) {
+            sb_t b;
+            sb_init(&b);
+            json_write_pretty(&b, rep);
+            puts(b.s);
+            sb_free(&b);
+            json_free(rep);
+        }
     } else if (!strcmp(cmd, "hear"))
         rc = cmd_hear(&c, argc - 2, argv + 2);
     else if (!strcmp(cmd, "stats")) {

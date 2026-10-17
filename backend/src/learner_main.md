@@ -34,3 +34,11 @@ learner hears nothing, learns nothing and counts no turn, so probing
 changes nothing it measures. Each answer goes to `probes.jsonl` with the
 time, the turns the learner had had, its vocabulary, the reply, the
 coherence and the requirements.
+
+`learner memory-rebuild` empties the fast memory and makes it again from
+turns.jsonl (each passed taught turn, in order; speak.md), prints what it
+would have chosen before each turn (overall, by tens of turns, on words and
+on marks) and the margin between its first and second word, and saves the
+store. It takes the writer lock: stop `learner serve` first.
+`MJ2_MEMORY` is the memory's weight in a word's score (0, the default: it
+learns but does not speak).
