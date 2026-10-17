@@ -1,8 +1,9 @@
 # MechJev-v2
 
-A decision model that learns to speak English from its own decisions.
+A decision model that learns to speak English from its own decisions, and
+a teacher that talks to it.
 
-MechJev-v2 has two halves, and only the first touches a language model:
+MechJev-v2 has three parts, and only the first touches a language model:
 
 1. **The decision engine**, `xks`, in C. It is the XKEYSCORE portion of
    [Mechanical Jev](https://github.com/Lasimeri/Mechanical-Jev) and
@@ -14,40 +15,50 @@ MechJev-v2 has two halves, and only the first touches a language model:
    - **Choice**: up to 255 options.
    - **Score**: 2 to 10 ordered levels.
 
-   It reads them out of Qwen3.8-35B-A3B (Q4_K_M) through llama.cpp, and the
-   35B never writes a word.
-2. **The learner**, in C with no llama.cpp: a logic gate circuit,
+   It reads them out of Qwen3.8-35B-A3B (Q4_K_M) through llama.cpp. The 35B
+   writes one thing besides: the teacher's lines (`POST /v1/generate`).
+   It never writes a word of MechJev's.
+2. **MechJev, the learner**, in C with no llama.cpp: a logic gate circuit,
    conceptually grounded.
    - **Inputs.** Variables whose probabilities the decision engine decides:
      typed questions about the conversation and about the reply so far.
    - **What it does.** It proposes the next word of a reply.
-   - **Teacher.** The engine chooses among its proposals, as English
-     continuations, and judges every finished reply against a list of
-     requirements.
+   - **How it is taught.** The engine chooses among its proposals, as
+     English continuations, and judges every finished reply against a list
+     of requirements.
    - **Learning.** The circuit learns from those choices. Its vocabulary
      grows from the English it hears, so its replies grow from silence to
      words to sentences.
+3. **The teacher**, in C: Qwen3.8-35B talking to MechJev from outside, as
+   a person at its TUI would. It writes its lines in plain English, chooses
+   what to teach and judges the answers by decisions, and demonstrates
+   through MechJev's own taught turns.
 
 The language is acquired by the circuit. Nothing in the 35B changes.
 
 ```
-╔═════════════════════════════ this machine (Ryzen 7 5800X, RTX 3090 Ti) ════════════════════════════╗
-║                                                                                                    ║
-║  ┌──────────────────────────────────────────┐  POST /v1/systemone  ┌────────────────────────────┐  ║
-║  │ learner (C, no llama.cpp)                │ ───────────────────▶ │ xks, the decision engine   │  ║
-║  │                                          │ variables, rerank,   │ (C, :8090)                 │  ║
-║  │  heard English ─▶ lexicon                │ requirements         │                            │  ║
-║  │                                          │                      │ session on sequence 0,     │  ║
-║  │  variables (P) ──┐                       │ ◀─────────────────── │ a fork per question,       │  ║
-║  │  word before ────┼─▶ gate circuit ──┐    │ probabilities        │ label log-probabilities    │  ║
-║  │  position ───────┘   106 > 256 >    │    │                      │            │               │  ║
-║  │                      256 > 128      ▼    │                      │            ▼               │  ║
-║  │  ternary tied embeddings ─▶ word scores  │                      │ llama.cpp (CUDA build)     │  ║
-║  │                                          │                      │ Qwen3.8-35B-A3B Q4_K_M     │  ║
-║  │  learner.store, curves.jsonl             │                      │ 21 of 41 layers on the GPU │  ║
-║  └──────────────────────────────────────────┘                      └────────────────────────────┘  ║
-║                                                                                                    ║
-╚════════════════════════════════════════════════════════════════════════════════════════════════════╝
+╔═══════════════════════ this machine (Ryzen 7 5800X, RTX 3090 Ti) ════════════════════════╗
+║                                                                                          ║
+║  ┌─────────────────────────────────────┐  /v1/systemone  ┌─────────────────────────────┐ ║
+║  │ MechJev: learner serve (C, :8092)   │ ──────────────▶ │ xks, the decision engine    │ ║
+║  │                                     │ variables,      │ (C, :8090)                  │ ║
+║  │  heard English ─▶ lexicon           │ rerank, checks  │                             │ ║
+║  │  variables (P) ──┐                  │ ◀────────────── │ session on sequence 0, a    │ ║
+║  │  word before ────┼─▶ gate circuit   │ probabilities   │ fork per question, label    │ ║
+║  │  position ───────┘   106>256>256>128│                 │ log-probabilities           │ ║
+║  │  lookahead, stop Noul, keeper       │                 │                             │ ║
+║  │  fast memory (silent)               │                 │ /v1/generate: the teacher's │ ║
+║  │  learner.store, turns.jsonl         │                 │ lines only                  │ ║
+║  └──────────────────▲──────────────────┘                 │              │              │ ║
+║                     │ /v1/probe {message}                │              ▼              │ ║
+║                     │ /v1/talk {message, show}           │ llama.cpp (CUDA build)      │ ║
+║  ┌──────────────────┴──────────────────┐  /v1/generate   │ Qwen3.8-35B-A3B Q4_K_M      │ ║
+║  │ teacher (C): Qwen, from outside     │ ──────────────▶ │ 21 of 41 layers on the GPU  │ ║
+║  │ writes lines, chooses, judges       │  /v1/systemone  │                             │ ║
+║  │ lessons.txt ─▶ lessons.jsonl        │ ◀────────────── │                             │ ║
+║  └─────────────────────────────────────┘                 └─────────────────────────────┘ ║
+║                                                                                          ║
+╚══════════════════════════════════════════════════════════════════════════════════════════╝
 ```
 
 ## Use it
@@ -59,12 +70,12 @@ You need:
 - gcc and tcc (the export check compiles with tcc).
 
 ```sh
-make            # build the engine, the learner and the front end (mjev2)
+make            # build the engine, MechJev, the teacher and the front end (mjev2)
 make check      # the checks that need no model
 make watch      # the TUI in tmux session jev2, opened in a Konsole window
 make tui        # the TUI on this terminal (t: the talk screen)
 make serve      # start the engine on 127.0.0.1:8090 (loads the 35B)
-make talk       # a bare conversation with the learner on this terminal
+make talk       # a bare conversation with MechJev on this terminal
 make stats      # what it knows
 make stop       # stop the engine
 ```
@@ -72,55 +83,76 @@ make stop       # stop the engine
 **The TUI** (`frontend/target/release/mjev2`) is Mechanical Jev's,
 reused as the management interface, with a talk screen added:
 - **Left:** the conversation, each reply with its words' per-token scores
-  under it, the reply growing word by word while a turn runs.
-- **Right:** what the learner knows and how it is learning: agreement with
-  the engine, also without the variables or the word before; coherence;
-  requirements; and the agreement turn by turn.
-- **Starting.** The first thing said starts the engine and the learner if
-  they are not up.
+  under it, the reply growing word by word while a turn runs. The
+  teacher's demonstrations appear here too.
+- **Right:** what MechJev knows and how it is learning: agreement with the
+  engine, also without the variables or the word before; coherence;
+  requirements; the agreement turn by turn; the last probe.
+- **Starting.** The first thing said starts the engine and MechJev's
+  server if they are not up. F2 lets the circuit speak by itself.
 - **The rest.** Mechanical Jev's other screens (ask, examples, server)
   still put typed questions to the engine.
 
+**`mjev2`** also has `talk`, `probe` (the fixed probe questions to the
+circuit alone) and `teach` (the teacher; below).
+
 **MCP.** `mjev2 mcp` lets an agent drive the same TUI a person watches
-(`screen`, `type`, `keys`), talk to the learner (`talk`, `hear`, `stats`)
-and ask the engine (`judge`). Register it with
+(`screen`, `type`, `keys`), talk to MechJev (`talk`, `hear`, `probe`,
+`stats`), run the teacher (`teach`) and ask the engine (`judge`). Register
+it with
 `claude mcp add --scope user mjev2 -- <checkout>/frontend/target/release/mjev2 mcp`.
 
-`backend/build/learner`:
+**MechJev** is `backend/build/learner` (backend/src/learner_main.md):
 - `talk --trace` prints each turn's whole record, and `talk --alone` lets the
   circuit speak by itself (the engine still perceives and judges, but
   chooses no word: what it has acquired, unaided);
 - `hear FILE` reads English text (words only: hearing grows the lexicon,
   it never teaches what follows what);
+- `probe` asks the fixed probe questions (`probes.txt`) of the circuit alone;
 - `export FILE.c` writes the discrete circuit as a C function;
-- `serve` gives the harness an HTTP API on 127.0.0.1:8092;
+- `memory-rebuild` and `circuit-rebuild` make the fast memory or the circuit
+  again from the record;
+- `serve` gives the TUI, the MCP tools and the teacher an HTTP API on
+  127.0.0.1:8092 (`/v1/talk`, `/v1/hear`, `/v1/probe`, `/v1/stats`);
 - `reset --yes` forgets everything.
+
+**The teacher** is `backend/build/teacher` (backend/src/teach.md):
+`freeze` writes the test lines once, `measure` puts them to MechJev alone,
+`teach N` gives N lessons, `lines` shows the lines Qwen writes. `mjev2
+teach [N]` starts the engine and MechJev first.
 
 **Data** is in `~/.local/share/mechjev-v2`:
 - `learner.store`;
 - `curves.jsonl`, one row a turn;
 - `turns.jsonl`, every word's options, the draw and its seed;
-- `history.json`.
+- `history.json`;
+- `probes.jsonl`, the probes;
+- `lessons.jsonl` and `teacher_tests.jsonl`, the teacher's.
 
 **Configuration** comes from `xks.conf`, an untracked `xks.local.conf`, and
-`~/.config/xks/xks.conf` (shared with Intel Phi Jev). Environment
-variables win:
+`~/.config/xks/xks.conf` (shared with Intel Phi Jev, read before
+`xks.conf`). Environment variables win:
 
 | key | default | what |
 | --- | --- | --- |
 | `XKS_SUBJECT` | the 35B Q4_K_M | the decision engine's model |
 | `XKS_GPU_LAYERS` | `50%` | a count, or a share of the layers, on the GPU |
-| `XKS_BIND` | `127.0.0.1:8090` | where the engine answers, and where the learner asks |
+| `XKS_BIND` | `127.0.0.1:8090` | where the engine answers, and where MechJev and the teacher ask |
 | `XKS_KILL_DATE` | `1800` | seconds without a question before the engine exits (0: never) |
 | `XKS_PERMUTATIONS` | `3` | option rotations averaged per Choice |
-| `XKS_SYSTEM_FILE` | unset | a file's text ahead of the engine's system text |
+| `XKS_UBATCH` | `2048` | tokens in one physical step (engine.md) |
+| `XKS_SYSTEM_FILE` | unset | a file's text ahead of the engine's system text (this machine's `~/.config/xks/xks.conf` sets `~/CLAUDE.md`; parity runs set it empty) |
 | `MJ2_TEMP`, `MJ2_TOP_K`, `MJ2_TOP_P`, `MJ2_MIN_P`, `MJ2_REPEAT_PENALTY` | 0.5, 75, 0.95, 0.05, 1.2 | how each word is drawn from the engine's distribution |
 | `MJ2_MIN_HEARD` | `2` | times a word is heard before it may be said |
 | `MJ2_LOOKAHEAD` | `3` | the engine's best words scored for coherence before one is said (0: its first is said) |
+| `MJ2_KEEP_DROP` | `0.05` | the coherence keeper: how far below its best sentence end a reply may fall (below 0: off) |
 | `MJ2_MEMORY` | `0` | the fast memory's weight in a word's score (0: it learns but does not speak) |
-| `MJ2_PROBE_REPEATS` | `3` | times `learner probe` asks each question |
+| `MJ2_RECENT_SHARE` | `0` | share of rehearsal passes drawn from the newest examples |
+| `MJ2_PROBES`, `MJ2_PROBE_REPEATS` | `probes.txt`, `3` | the probe questions, and times each is asked |
 | `MJ2_VARS`, `MJ2_CHECKS` | `variables.txt`, `restrictions.txt` | the variables and the requirements |
-| `MJ2_DATA` | `~/.local/share/mechjev-v2` | the learner's data |
+| `MJ2_LESSONS` | `lessons.txt` | the teacher's lessons |
+| `MJ2_BIND` | `127.0.0.1:8092` | MechJev's server |
+| `MJ2_DATA` | `~/.local/share/mechjev-v2` | the learner's and the teacher's data |
 
 ## How a reply is made
 
@@ -138,8 +170,9 @@ variables win:
      Past that, the circuit proposes its 8 best and the engine adds its 10
      best from the whole vocabulary. The words the person just said are
      always offered too: before, 24 of 34 content words they used were
-     never shown. The options are shuffled with a clock seed, so the engine
-     never sees the circuit's ranking.
+     never shown. In a teacher's demonstration the lesson's answer words
+     are offered as well. The options are shuffled with a clock seed, so
+     the engine never sees the circuit's ranking.
    - **Choice.** The engine chooses among them as continuations of the
      reply: one Choice, with the `step` variables about the reply so far
      in the same request.
@@ -148,6 +181,12 @@ variables win:
      good a start each makes, and the best is said. After a sentence ends,
      the engine is asked whether the reply says all a good reply should;
      it stops only if so (the user's stop rule).
+   - **Keeping coherence** (the coherence keeper, the user's ask): at
+     every sentence end the reply's coherence is held against its best
+     sentence end so far; falling more than 0.05 below it ends the reply,
+     cut back to that best end. Without it a reply that never "said all"
+     ran on and decayed ("Yes!" 0.772, then "Yes! You too? Like to talk?"
+     0.558).
    - **The example.** That decision, with the engine's distribution, is
      the example the circuit learns from.
 4. **Score each word.** The engine scores the coherence of the reply after
@@ -177,23 +216,30 @@ The details are in the sibling `.md` of each source file in `backend/src/`.
 
 ## The teacher
 
-The decision engine also teaches (the user's ask). It still only decides:
+Qwen3.8-35B teaches MechJev from outside, the way a person at the TUI would
+(the user's ask: "MechJev shouldn't question/teach itself, Qwen3.8-35B
+should do that for MechJev"). `backend/build/teacher` is a client of the
+engine and of MechJev's server:
 
-- it **chooses the lesson** the learner needs most (a Choice over
-  `lessons.txt`, with the learner's record in the question);
-- it **composes its own line** to the learner, a word at a time, by Choice
-  among the words in `teacher_words.txt` and the words the learner has
-  heard;
-- it **judges** the learner's reply by a Noul with the lesson's own check,
-  beside the requirements.
+- **The engine chooses the lesson** MechJev needs most, a Choice over
+  `lessons.txt` with its record in the question (times taught, passes on
+  the test lines, its last lessons in order, so it does not loop).
+- **Qwen writes the line** in plain English (`POST /v1/generate`), knowing
+  its own recent lines so it says each anew: "Hello MechJev! How are you?",
+  "What is your name, MechJev?".
+- **MechJev tries alone** (its probe path: nothing heard or learned), and
+  the engine judges the reply: every requirement, and the lesson's own
+  check as a Noul.
+- **Failed, a demonstration**: a taught turn on the line in MechJev's
+  conversation, the engine choosing each word among MechJev's own (and the
+  lesson's answer words, "MechJev" for "What is your name?"), then another
+  try; 3 at most.
 
-A lesson: the learner tries the line alone (nothing learned); failed, the
-engine demonstrates (a taught turn on the line, the keeper on) and it tries
-again, 3 times at most; then mastery is tested on a fresh line the teacher
-composes and never teaches. The learner's name, for the name lessons, is
-MechJev. `mjev2 teach [N]` (or the MCP `teach` tool, or `learner teach`;
-`--measure` tests every lesson without teaching); each lesson is a row in
-`lessons.jsonl`. Details: `backend/src/teach.md`.
+Qwen writes only the teacher's side: MechJev's replies are always its own,
+and it never learns from a reply Qwen wrote. Mastery is measured on test
+lines Qwen writes once (`teacher freeze`) and never teaches (`teacher
+measure`, before and after). Each lesson is a row in `lessons.jsonl`.
+Details: `backend/src/teach.md`.
 
 ## Measured
 
@@ -212,6 +258,13 @@ Every number comes with the command or file that produced it.
 | per-token scoring (RED): one context, the engine weakly preferring the wrong word (0.4 to 0.3), 8 seeds | the right word first among the shown: 0.172 (0.000 to 0.400) with the KL alone, 0.803 (0.450 to 0.925) with the per-token reward | `backend/tests/learner_test.c` |
 | a word's step on the engine (rerank in 3 rotations, 5 step variables, coherence; 3 interleaved pairs) | 7.2 to 10.2 s unpadded; 5.4 to 5.5 s padded (`pad_equal`); 2.0 s padded at ubatch 2048 | `backend/src/engine.md` |
 | a word of a reply, live (35B at 50% on the GPU) | 16 to 25 s a word before the padding; 4 to 5 s after | `turns.jsonl` |
+| the coherence keeper: block 8 (keeper on) against block 7 (stop rule alone), the same ten messages | passed every requirement 9/10 against 6/10; mean coherence 0.725 against 0.585; probe 9/12 against 4/12 (not interleaved; block 8 was the fourth pass over the messages, block 7 the third) | `backend/src/speak.md`, `turns.jsonl`, `probes.jsonl` |
+| the fast memory (Khasia), learning only: one context a word, 12 words | recalled 12/12, through 10% of the bits flipped 12/12, none lost to a 13th | `backend/tests/learner_test.c` |
+| the fast memory speaking (weight 25) against silent, the probe interleaved | 10/24 against 15/24 passed: it pulls first words to "Yes", so it stays silent | `tools/harm_ab.sh`, `backend/src/learner.md` |
+| do the turn variables decide the engine's first word? (82 taught turns, leave one out) | nearest neighbour 0.390, nearest centroid 0.366, always "Yes" 0.500: no; "answer a question" covered 51 of them | `backend/src/learner.md` |
+| four input bits a variable against one (three words on two variables, 8 seeds, 3 seed sets) | each seed's worst word at 1,000 passes 0.604 against 0.442; a circuit retrained so lost live, 12/24 against 15/24, so one bit stays | `learner_test three`, `backend/src/learner.md` |
+| generation for the teacher's lines | "Hello MechJev! How are you?" 9 tokens, 8.2 s; "What is your name, MechJev?" 5.6 s | `backend/src/engine.md` |
+| learning after the teacher was moved out (live) | a probe changed nothing (turns 127 to 127); a taught turn trained 15,661 passes in 3 s, saved the store, turns 127 to 128 | `turns.jsonl` |
 
 **The live learner, its first day** (`~/.local/share/mechjev-v2/curves.jsonl`):
 - **First replies:** "(no words yet)" twice, then "Are you? How are" and
@@ -239,6 +292,8 @@ said.
 | after | Hello! Are you happy today? | Do you like music? | What is your name? | Thank you for talking with me. |
 | --- | --- | --- | --- | --- |
 | 59 turns | 3/3, 0.79: "Yes. I am.", "Yes. I am.", "I am happy too." | 2/3, 0.68: "Hello. I do.", "Yes. I do music.", "Yes." | 0/3, 0.30 (no name was ever taught) | 3/3, 0.73: "Yes.", "Thank you.", "Hello." |
+| 102 turns (block 7, the stop rule without the keeper) | 2/3, 0.62: "I am too am too.", "Yes.", "Hello!" | 0/3, 0.33: "I am too am happy.", "I am too am?", "I did? Do?" | 0/3, 0.28: "I did? Walking?", "Cold.", "I am too am?" | 2/3, 0.57: "Thank you? Music you?", "Yes.", "Thank you." |
+| 112 turns (block 8, the keeper on) | 3/3, 0.82: "Yes!", "Yes. I am happy.", "Yes. I am happy." | 3/3, 0.82: "Yes!" three times | 0/3, 0.46 | 3/3, 0.75: "Thank you!", "Thank you.", "Thank you!" |
 
 Two earlier single-sample probes (49 and 59 turns, 3 and 1 of 4 passed)
 fall inside this spread, which is why each question is now asked three
@@ -255,27 +310,36 @@ is not an answer.
 
 - **No Xeon Phi cards** yet; the engine runs on this machine's CPU and
   GPU only.
-- **Cost per word** (4 to 5 s on the live learner) is measured on
-  single turns, not yet interleaved against a baseline.
-- **Acquisition** is early (about 100 turns): before learning a turn, the
-  circuit's first word is the engine's on 0.490 of the steps, against
+- **The teacher has not run end to end.** It is written and built (`teacher
+  freeze`, `measure`, `teach`), its generation measured; no lesson from it
+  has been given yet, and no before-and-after on the test lines exists.
+- **Parity after generation** is not re-checked. A run with a generation
+  before each parity request differed in every answer, but it ran with the
+  user's CLAUDE.md as the engine's system text and the recording did not;
+  it has to be run again with `XKS_SYSTEM_FILE=` empty. The engine's code
+  for generation only adds lines.
+- **The stop rule accepts unfinished replies.** "Mechjev is." stopped at
+  0.51 on "says all" with the grammar check at 0.17. Asking whether the
+  reply is "a complete, well-formed English reply, and says all ..." (as
+  the teacher's own end question was) is proposed, not done: the rule is
+  the user's.
+- **Cost per word** (4 to 13 s on the live learner) is measured on single
+  turns, not interleaved against a baseline.
+- **Acquisition** is early (about 130 turns): before learning a turn, the
+  circuit's first word was the engine's on 0.490 of the steps, against
   0.461 for the word most often said at that position. The fast memory
   gets 0.403 (0.432 on words, level with both) and, speaking, cost probe
-  passes (10/24 against 15/24), so it learns but does not speak.
-- **The variables do not decide the words yet.** Over 82 taught turns
-  the turn variables predict the engine's first word worse than always
-  guessing "Yes" (0.390 nearest neighbour, against 0.500): "answer a
-  question" covers 51 of them, yes-or-no and "what" questions alike. Four
-  input bits a variable make a variable learnable (a three-word test from
-  0.794 to 0.898), but a circuit retrained so lost live (12/24 against
-  15/24), so the default stays one bit (`backend/src/learner.md`).
-- **Replies end at the first sentence.** In block 6, at 11 points where
-  the reply could stop, it stopped 7 times: a one-word continuation is
-  unfinished, so it never reads better as a whole than "Yes." does. That
-  leaves no room for anything about what the person said.
+  passes, so it learns but does not speak.
+- **The variables did not decide the words.** Over 82 taught turns the
+  turn variables predicted the engine's first word worse than always
+  guessing "Yes" (0.390 against 0.500): "answer a question" covered 51 of
+  them, yes-or-no and "what" questions alike. Three variables were added
+  to tell those apart (`variables.txt`); their effect is not measured yet.
+  Four input bits a variable make a variable learnable but lost live, so
+  the default stays one bit (`backend/src/learner.md`).
 - **The step variables arrive a word late.** A step sees the answers the
   step before was given, about the reply one word shorter; asking first
-  would cost a request per word.
+  would cost a request per word (the user chose not now).
 
 ## Where the ideas come from
 
@@ -285,6 +349,7 @@ is not an answer.
 | [xucian/talktojev](https://github.com/xucian/talktojev), "Generation is Classification" (doi:10.5281/zenodo.22940945) | choosing at several grains: how much to say, then each word; checks after the reply |
 | [Aster, "An LLM Made from Logic Gates"](https://www.asterlab.ai/research/an_llm_made_from_logic_gates) | a language model entirely of circuits that compile to C: tied embeddings added or subtracted at the output, a fixed look at the token before, training judged against a growing list of restrictions |
 | Petersen, Borgelt, Kuehne, Deussen, "Deep Differentiable Logic Gate Networks" (NeurIPS 2022, arXiv:2210.08277) | the circuit itself: the 16 relaxed gates, their training, their discretization |
+| Petersen, Kuehne, Borgelt, Welzel, Ermon, "Convolutional Differentiable Logic Gate Networks" (NeurIPS 2024, arXiv:2411.04732) | residual initialization, measured against the Gaussian (it keeps the signal; at three layers it was not needed) |
 | [VladimerKhasia/booleanclass](https://github.com/VladimerKhasia/booleanclass) (doi:10.5281/zenodo.19170384) and its paper, Khasia, "Backpropagation-Free Continual Learning in Boolean Space for Extreme Edge Intelligence" (SSRN 6459123, 2026) | the fast memory: level hypervectors, XOR binding, majority bundling, class prototypes by superposition, error-driven correction, recall by Hamming distance |
 | arXiv:2405.15658 (HDC for referring segmentation) | the paper is vision-language segmentation, not hyperdimensional computing; taken from it: decoding at several grains, and a count of how much |
 | [TypeSafe AI's Jev](https://typesafe.ai) and its system-one-adapter | the wire format and the confidence formulas |

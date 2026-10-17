@@ -2,7 +2,7 @@
 
 The client for the learner's HTTP API (`learner serve`): `MJ2_BIND`,
 default 127.0.0.1:8092.
-- **Calls:** `healthy`, `stats`, `talk(message)` (one turn: the record
+- **Calls:** `healthy`, `stats`, `probe` (the fixed probes), `talk(message)` and `talk_as(message, alone)` (one turn: the record
   with the reply and every word's options, score and seeds) and
   `hear(text)`.
 - **Timeout.** The read timeout is an hour: a turn is many decisions of

@@ -73,3 +73,32 @@ the coherence Score; 3 interleaved pairs each):
 
 MechJev-v2's `xks.conf` sets `XKS_UBATCH=2048`, and the parity scripts pin
 512.
+
+## Generation (`engine_generate`, `POST /v1/generate`)
+
+For the teacher's lines only (teach.md): MechJev's replies are never
+generated. Under the engine's lock the model's memory is cleared, the whole
+rendered chat decoded on sequence 0, and the reply sampled a token at a
+time until an end-of-generation token or `max_tokens`, each sampled token
+decoded in turn. The sampler chain is llama.cpp's (`llama_sampler_chain`,
+`~/llama.cpp` f5b9bd3): repeat penalty over the last 64 tokens, top-k,
+top-p, min-p, temperature, then `dist` with the caller's seed; defaults the
+user's settings (temperature 0.5, top-k 75, top-p 0.95, min-p 0.05, repeat
+penalty 1.2). `llama_sampler_sample` accepts the token into the chain
+itself.
+
+Afterwards the memory is cleared again and the decision path's cached
+session forgotten (`cached.n = 0`): the subject is hybrid (Gated Delta
+Net), its recurrent state cannot share a sequence with the cached prefix,
+so the next decision prefills its session anew. Generation changes no code
+the decisions run (the engine's diff for it adds lines only).
+
+Measured on the live engine: "Hello MechJev! How are you?" (9 tokens, 8.2
+s) and "What is your name, MechJev?" (5.6 s), prompt and all.
+
+**Parity, not yet re-checked.** A run of the parity requests with a
+generation before each one differed from the recording in every answer,
+but that run had the user's `~/.config/xks/xks.conf` in force
+(`XKS_SYSTEM_FILE=~/CLAUDE.md`, about 1,850 tokens of system text, its
+date line changing every minute) and the recording did not: parity runs
+must set `XKS_SYSTEM_FILE=` empty. To be run again so.

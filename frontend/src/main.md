@@ -6,6 +6,8 @@
 | --- | --- |
 | `tui [--file F]` | the TUI (`t` opens the talk screen) |
 | `talk MESSAGE [--json]` | one turn: the reply, each word with its score; the engine and the learner are started when they are not up |
+| `probe` | the fixed probe questions to the circuit alone: passed of the repeats, mean coherence, what it said |
+| `teach [N] [--lesson NAME] [--measure]` | the teacher (`backend/build/teacher`): N lessons from Qwen, or MechJev measured on the frozen test lines; the engine and the learner started first, the teacher's output live |
 | `stats` | what the learner knows |
 | `serve`, `stop` | the decision engine |
 | `mcp` | the MCP server on stdio |

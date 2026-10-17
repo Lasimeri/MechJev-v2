@@ -108,6 +108,11 @@ used it). In blocks 5 and 6 (20 turns) the person used 34 content words;
 5 of 88 steps (its groups answer "not listed" for a word that cannot come
 next yet). The trace marks a word decided from these as `from: heard`.
 
+A teacher's demonstration (`POST /v1/talk {show}`, teach.md) also offers
+`cfg.show`, the lesson's answer words, the same way: "What is your name?"
+holds no "MechJev", and without it the engine had only "What?" and "I
+am." to show. MechJev hears them first, so they are in its lexicon.
+
 ## The fast memory in a turn
 
 Each step's context (`learner_context`: the variables as the circuit saw

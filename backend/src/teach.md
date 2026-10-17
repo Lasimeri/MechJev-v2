@@ -1,92 +1,111 @@
-# teach.c: the decision engine as the learner's teacher
+# teach.c: the teacher
 
-The user's ask (2026-10-17): "Setup the LLM I'm using for decisions to not
-only decide, but also teaching this architecture." The engine still only
-decides (Noul, Choice, Score); it never writes text, and it never writes
-the learner's replies. As the teacher it:
+Qwen3.8-35B teaches MechJev from outside, as a person at the TUI would:
+the user's ask (2026-10-17), "MechJev shouldn't question/teach itself,
+Qwen3.8-35B should do that for MechJev, similar to what you were doing
+initially to talk to the MechJev architecture". The program is `teacher`
+(teacher_main.c); this file is its library. It is a client of two servers
+and links no llama.cpp:
 
-1. **chooses the lesson** (`teacher_choose`): a Choice over the lessons in
-   `lessons.txt`, with the learner's record in the question (each lesson's
-   times taught, how often it passed on lines never taught, the last
-   result; from `lessons.jsonl`);
-2. **composes its own line** to the learner (`teacher_compose`), a word at
-   a time by Choice (the jev-llm way; the user chose this over a bank of
-   written lines);
-3. **judges** the learner's reply (`teacher_check`): a Noul with the
-   lesson's own check, beside the requirements in `restrictions.txt`.
+- **the engine** (xks, `MJ2_ENGINE`, else `XKS_BIND`): Qwen writes the
+  teacher's lines (`POST /v1/generate`), chooses the lesson (a Choice) and
+  judges MechJev's replies (a Noul);
+- **MechJev** (learner serve, `MJ2_BIND`, 127.0.0.1:8092): a try alone is
+  `POST /v1/probe {"message"}` (the probe path: from an empty
+  conversation, nothing heard, learned or counted); a demonstration is
+  `POST /v1/talk {"message", "show"}`, a taught turn in its conversation.
 
-The loop is in learner_main.c (`learner teach`, `POST /v1/teach`,
-`mjev2 teach`, the MCP `teach` tool): compose a line; the learner tries it
-alone (the probe path: from an empty conversation, nothing heard or
-learned); passed only if every requirement holds and the lesson's check is
-0.5 or more. Failed: a demonstration (a taught turn on the same line: the
-engine chooses each word among the learner's own, the keeper on; the turn
-goes to turns.jsonl like any other) and another try, 3 demonstrations at
-most. Then mastery: a fresh line toward the lesson's held-out goal (or its
-goal), never taught, tried alone. `--measure` does only that, for every
-lesson. Each lesson is a row in `lessons.jsonl`.
+**The line it holds.** Qwen writes only the teacher's side. MechJev's
+replies are always its own: in a demonstration the engine chooses each
+word among the words MechJev offers (its circuit's, the line's, the
+lesson's shown words), as in any taught turn. MechJev never learns from a
+reply Qwen wrote.
 
-## Composing a line
+## The lessons (`lessons.txt`)
 
-The vocabulary is `teacher_words.txt` (simple, common English, written by
-the developer; edit freely) and every word the learner has heard, once each
-(the teacher's spelling first: "MechJev"). Each word:
+`NAME | GOAL | CHECK [| HELD-OUT GOAL [| SHOWN WORDS]]`, a line each:
 
-- **Groups.** Every candidate (all words but the one before, and the marks
-  after a word), shuffled by a clock seed, in Choices of 25 plus "(not
-  listed)": "Which of these should come next in it?". One option rotation
-  (`{"xks": {"permutations": 1}}`, judge.md): the shuffle already cancels
-  the order's pull, and it is a third of the cost.
-- **Finalists.** Every word a group gives 0.05 or more, the 12 best. Only
-  each group's top, at first, lost the right word: after "Hello how are"
-  the finalists were "is", "do" and "?", no "you"; and "do" fell under 0.10.
-- **The final Choice**, among the line as it would go on with each, framed
-  as unfinished ("It is unfinished: more words will follow. Which of these
-  is the best start of clear, correct English that does what the line
-  should do?"). Asked "the best way to go on", a line that already looked
-  finished won ("Hello how?", "MechJev?"), the myopia the learner's own
-  word choice had (speak.md); asked toward the goal alone, the word about
-  the goal won over grammar ("What weather" over "What is").
-- **The end**, once a sentence has ended, by a Noul: "It is a complete,
-  well-formed English line, and it does all that this line should do:
-  GOAL" (0.5 or more), never as an option among words. A line has two
-  sentences at most (tell, then ask) and is cut back to the sentence end
-  where that Noul was highest (the keeper, for the teacher: the lines ran
-  on and decayed, "Can you like to walk? Would want to go? Yes? Go? No?").
-  A line cut at its length ends with the mark the engine chooses.
-- A line under 0.5 on its goal is composed again, once
-  (`compose_best`), and the line that tests mastery is never the taught
-  line's text.
+- **GOAL** is what the teacher's line should do ("Ask the learner how it
+  feels today.").
+- **CHECK** is a statement about MechJev's reply, judged as a Noul: a try
+  passes when it holds (0.5 or more) and every requirement in
+  `restrictions.txt` holds (MechJev's own judging, in its turn record).
+- **HELD-OUT GOAL** is what the test lines should do instead (the name
+  lesson asks without saying the name).
+- **SHOWN WORDS** are the answer's words a demonstration may offer, which
+  the line itself may not hold ("What is your name?" holds no "MechJev");
+  MechJev hears them first, so they are in its lexicon.
 
-Measured, `learner compose` (about 4 s a choice, 8 to 25 s a line once
-fixed): "Hello how are you?", "How do you feel today?", "What is the
-weather like?", "Would you like to play?", "Thanks for talking!",
-"Goodbye."; weaker: "What you like?", and the two-part name lesson
-("Tell MechJev to tell name your?"), since split into `name-tell` and
-`name`. A run varies with the clock seeds.
+The learner's name, for the name lessons, is MechJev (the user's).
 
-## Context, so it does not loop
+## A lesson (`teacher teach`)
 
-The user's ask: "The teaching model needs to have ctx to prevent looping".
-Without it the teacher taught name-tell twice running, greeted with "Hello
-how are you?" each time, and demonstrated "I am." twice to "What name?".
-Now:
+1. **The engine chooses the lesson**, a Choice over the lesson names with
+   MechJev's record in the question: each lesson's times taught, its passes
+   on the test lines, the last lesson's result, and the last 6 lessons in
+   order ("a lesson that has not worked the same way twice running can
+   wait while you teach another").
+2. **Qwen writes the line** (`teacher_write`): the system text makes it a
+   patient English teacher talking with MechJev, a beginner; the user text
+   holds the goal and its last 8 lines ("Say it in your own words, not as
+   you have said it before"). At most 48 tokens, a clock seed, the user's
+   sampling settings (engine.md). The first line is kept, quotation marks
+   taken off. A line that is a test line (marks, spaces and case aside) is
+   written again, 3 times at most.
+3. **MechJev tries alone**, judged.
+4. **Failed: a demonstration**, a taught turn on the same line in
+   MechJev's conversation (the TUI shows it), then another try; 3
+   demonstrations at most.
 
-- choosing, it reads its last 6 lessons in order with what came of them,
-  and is told a lesson that has not worked the same way twice running can
-  wait;
-- composing, its state holds the last 8 lines it said to the learner, and
-  it is asked to say this one in a new way; the line that tests mastery is
-  composed knowing this lesson's exchanges ("In this lesson you said ...
-  Alone it answered ... You showed it ...");
-- demonstrating, the turn's conversation is this lesson's demonstrations so
-  far, and it may offer the lesson's SHOWN WORDS (lessons.txt), the
-  answer's words, which the line itself may not hold ("What name?" holds no
-  "MechJev").
+Each lesson is a row in `lessons.jsonl` (mode `teach`): the line, every
+try and demonstration, the demonstrations it took, passed or not.
 
-The learner's tries alone keep an empty conversation (their judging is the
-measure). The name lesson, before and after: demonstrations "What?", "I
-am.", "I am." against "My name is mechjev." twice; the learner alone after
-them "Yes I too.", "Name?" against "Yes, mechjev." (check 0.81) and "My
-name is mechjev?" (0.76); on a line never taught "Yes!" (0.01) against "My
-name is mechjev am." (0.71, the requirements failing on form).
+## The test lines (`teacher freeze`, `teacher measure`)
+
+`teacher freeze [K]` has Qwen write K lines a lesson (3) toward the
+held-out goal, each new against the ones already written, into
+`teacher_tests.jsonl`. They are never taught, and they do not change: it
+refuses to write them again while the file exists, so measurements before
+and after teaching use the same lines. `teacher measure [R]` has MechJev
+try every test line alone R times (1), judged, a row each in
+`lessons.jsonl` (mode `measure`), and prints passes a lesson and in all.
+
+## Measured so far
+
+- **Generation** (`POST /v1/generate`, the live engine): "Hello MechJev!
+  How are you?" (9 tokens, 8.2 s) and "What is your name, MechJev?" (5.6
+  s), from a goal each.
+- **The teacher end to end has not been run yet** (written and built
+  2026-10-17, f02ffbd).
+
+## Before: the teacher inside the learner (removed)
+
+The first teacher ran inside the learner (`learner teach`) and composed
+its lines a word at a time by Choice from MechJev's own vocabulary and a
+word list. The user rejected it: MechJev was questioning itself, in its
+own clipped words ("Who name please?", "MechJev. Hello."). What it
+measured, still true of the lessons:
+
+- **Composing by Choice** needed every fix the learner's replies had
+  needed: words judged as an unfinished start, not "the best way to go
+  on" ("Hello how?" won); every word a group gave 0.05 or more, not each
+  group's top ("you" and "do" never reached the finalists); the end by a
+  Noul, two sentences at most. Six of nine lines read well after that
+  ("How do you feel today?"), at 8 to 25 s a line.
+- **Context against looping** (the user's ask, "The teaching model needs
+  to have ctx to prevent looping"): without its last lessons and lines it
+  taught one lesson twice running, greeted the same way each time, and
+  demonstrated "I am." twice to "What name?".
+- **Shown words**: with the answer's words offered, the name lesson's
+  demonstrations went from "What?", "I am.", "I am." to "My name is
+  mechjev." twice; MechJev alone then said "Yes, mechjev." (check 0.81) and
+  "My name is mechjev?" (0.76), and on a line never taught "My name is
+  mechjev am." (0.71, against "Yes!" 0.01 before), the requirements still
+  failing it on form.
+- **What a demonstration teaches is the line's**: to "MechJev. Hello."
+  every demonstration answered the greeting, and the name was not
+  learned. The lines' quality decides the lesson.
+
+The baseline taken then (one fresh line a lesson, 10 lessons): 1 of 10
+passed, yes-no only ("Yes!", 0.97). It used composed lines, not the test
+lines above, so it is not comparable with `teacher measure`.

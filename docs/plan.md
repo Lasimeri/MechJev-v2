@@ -95,3 +95,22 @@ Two parts, and only the first touches llama.cpp.
 - **Learned from the rejected version:** at 3.2 to 4.9 s a word, "(none of
   these)" made silence the easy answer. The rerank now always picks a
   word, and the lexicon is widened when the circuit is unsure.
+- **The word said** is the coherence lookahead (the user's choice): the
+  rerank's best 3 scored as a good start (viability), not as a finished
+  reply (speak.md).
+- **Stopping and keeping coherence** (the user's): after a sentence ends
+  the engine is asked whether the reply says all it should; the coherence
+  keeper ends a reply that falls 0.05 below its best sentence end and cuts
+  it back there. Block 8 against block 7: 9/10 against 6/10 passed,
+  coherence 0.725 against 0.585 (speak.md).
+- **A fast memory** after Khasia (SSRN 6459123) learns every passed reply
+  at once; speaking, it cost probe passes, so it learns but is silent
+  (learner.md, hdmem.md).
+- **Why acquisition is slow** (measured): the variables decided the
+  engine's words worse than always guessing "Yes"; three variables were
+  added (variables.txt). Four input bits a variable are a build option.
+- **The teacher** is Qwen3.8-35B from outside (the user's): it writes its
+  lines in plain English (`POST /v1/generate`, its lines only), chooses and
+  judges by decisions, and talks to MechJev through MechJev's own server;
+  MechJev's replies stay its own (teach.md). A first teacher inside the
+  learner, composing its lines word by word, was removed.
