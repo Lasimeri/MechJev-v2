@@ -760,9 +760,11 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     char **heard;
     size_t nh = split_words(person, &heard);
     size_t lex_before = l->n;
-    learner_hear(l, heard, nh);
+    if (!cfg->probe) /* a probe measures, it changes nothing */
+        learner_hear(l, heard, nh);
     free_words(heard, nh);
-    l->turns++;
+    if (!cfg->probe)
+        l->turns++;
     char *state = conversation(h, person);
 
     /* The turn's variables and how much to say, in one request. The cap is
@@ -1009,7 +1011,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     jobj_set(rec, "turn", ju64(l->turns));
     jobj_set(rec, "person", jstr(person));
     jobj_set(rec, "reply", jstr(*reply));
-    jobj_set(rec, "mode", jstr(cfg->alone ? "alone" : "taught"));
+    jobj_set(rec, "mode", jstr(cfg->probe ? "probe" : cfg->alone ? "alone" : "taught"));
     jobj_set(rec, "failed_requirement", jbool(failed));
     jobj_set(rec, "lexicon", ju64(l->n));
     jobj_set(rec, "new_words", ju64(l->n - lex_before));
@@ -1038,7 +1040,8 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     jobj_set(rec, "checks", checks);
     jobj_set(rec, "trace", trace);
     *record = rec;
-    history_add(h, person, *reply);
+    if (!cfg->probe)
+        history_add(h, person, *reply);
     free(said);
     free(ex);
     free(coh);

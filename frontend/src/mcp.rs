@@ -38,6 +38,8 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "alone": {"type": "boolean", "description": "the circuit speaks by itself: no word chosen by the engine, nothing learned"}}, "required": ["message"]}},
         {"name": "hear", "description": "Let the learner read English text (its words counted; nothing else is learned from hearing).",
          "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
+        {"name": "probe", "description": "The acquisition curve: the fixed probe questions (probes.txt) put to the circuit alone from an empty conversation; the learner hears, learns and counts nothing. One row each (reply, coherence, requirements), also kept in probes.jsonl.",
+         "inputSchema": {"type": "object", "properties": {}}},
         {"name": "stats", "description": "What the learner knows: lexicon, speakable words, variable slots, circuit, turns, replay, most used words.",
          "inputSchema": {"type": "object", "properties": {}}},
         {"name": "judge", "description": "Typed questions to the decision engine (System One: noul, choice, score) about a state; calibrated probabilities back, no text.",
@@ -112,6 +114,11 @@ fn call(name: &str, args: &Value) -> Result<Value, String> {
             let l = Learner::new();
             l.ensure()?;
             l.hear(t)
+        }
+        "probe" => {
+            let l = Learner::new();
+            l.ensure()?;
+            l.probe()
         }
         "stats" => {
             let l = Learner::new();

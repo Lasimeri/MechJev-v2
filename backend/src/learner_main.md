@@ -25,3 +25,12 @@ Data: `$MJ2_DATA`, else `$XDG_DATA_HOME/mechjev-v2`, else
 - `curves.jsonl`, one row per turn: lexicon, speakable, words, agreement with and without the variables or the previous word, requirements, cost;
 - `turns.jsonl`, the whole record with every word's options, draw and seeds.
 
+
+`learner probe` (also `POST /v1/probe`, `mjev2 probe`, the MCP `probe` tool)
+is the acquisition curve's instrument. The questions in `probes.txt`
+(`MJ2_PROBES`) are put to the circuit alone, each from an empty
+conversation. The engine perceives and judges as in any turn, but the
+learner hears nothing, learns nothing and counts no turn, so probing
+changes nothing it measures. Each answer goes to `probes.jsonl` with the
+time, the turns the learner had had, its vocabulary, the reply, the
+coherence and the requirements.

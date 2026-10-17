@@ -1,0 +1,9 @@
+# The acquisition curve's fixed questions, put to the circuit alone (no
+# word chosen by the engine) from an empty conversation: `learner probe`,
+# POST /v1/probe, `mjev2 probe`. Answers go to probes.jsonl with the turns
+# the learner had had. Change the list only between curves: a new question
+# has no past to compare with.
+Hello! Are you happy today?
+Do you like music?
+What is your name?
+Thank you for talking with me.

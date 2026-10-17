@@ -37,6 +37,8 @@ enum Cmd {
         #[arg(long)]
         json: bool,
     },
+    /// The fixed probe questions to the circuit alone (probes.jsonl).
+    Probe,
     /// What the learner knows.
     Stats,
     /// Start the decision engine (and nothing else).
@@ -55,6 +57,7 @@ fn main() {
         None => Err("mjev2 alone opens the TUI in a terminal; see mjev2 --help".into()),
         Some(Cmd::Tui { file }) => mjev2::tui::app::run(Client::from_env(), file),
         Some(Cmd::Talk { message, json }) => talk(&message.join(" "), json),
+        Some(Cmd::Probe) => probe(),
         Some(Cmd::Stats) => Learner::new()
             .ensure()
             .and_then(|_| Learner::new().stats())
@@ -89,6 +92,24 @@ fn talk(message: &str, json: bool) -> Result<(), String> {
     let words = mjev2::tui::talk::scored_words(&rec);
     if !words.is_empty() {
         eprintln!("  per word: {words}; coherence {:.2}", rec["coherence_final"].as_f64().unwrap_or(0.0));
+    }
+    Ok(())
+}
+
+fn probe() -> Result<(), String> {
+    let client = Client::from_env();
+    if !client.healthy() {
+        engine::ensure(&client)?;
+    }
+    let l = Learner::new();
+    l.ensure()?;
+    for r in l.probe()?.as_array().map(Vec::as_slice).unwrap_or_default() {
+        let reply = r["reply"].as_str().unwrap_or("");
+        println!("{}\n  alone: {}", r["probe"].as_str().unwrap_or(""), if reply.is_empty() { "(no words)" } else { reply });
+        if let Some(c) = r["coherence"].as_f64() {
+            let req = if r["failed_requirement"].as_bool() == Some(true) { "failed" } else { "passed" };
+            eprintln!("  coherence {c:.2}, requirements {req}");
+        }
     }
     Ok(())
 }

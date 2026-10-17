@@ -53,6 +53,7 @@ typedef struct {
     size_t nvars;
     bool learn;
     bool alone; /* the circuit speaks with no engine choice (it still perceives and judges) */
+    bool probe; /* a measurement: alone, and the learner hears, learns and counts nothing */
     sampling_t sampling;
     /* Called with the reply so far after every word (a terminal shows it live). */
     void (*on_word)(void *ud, const char *reply_so_far);

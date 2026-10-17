@@ -98,6 +98,12 @@ impl Learner {
         self.post("/v1/talk", json!({ "message": message, "alone": alone }))
     }
 
+    /// The fixed probe questions to the circuit alone (the acquisition
+    /// curve; the learner hears, learns and counts nothing): one row each.
+    pub fn probe(&self) -> Result<Value, String> {
+        self.post("/v1/probe", json!({}))
+    }
+
     pub fn hear(&self, text: &str) -> Result<Value, String> {
         self.post("/v1/hear", json!({ "text": text }))
     }

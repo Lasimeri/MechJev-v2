@@ -20,6 +20,7 @@
 #include <fcntl.h>
 #include <sys/file.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "conf.h"
@@ -355,6 +356,89 @@ static int cmd_export(ctx_t *c, int argc, char **argv)
     return 0;
 }
 
+/* The acquisition curve's instrument: fixed questions (`probes.txt`,
+ * `MJ2_PROBES`) put to the circuit alone, each from an empty conversation.
+ * The engine perceives and judges as in any turn; the learner hears
+ * nothing, learns nothing and counts no turn, so probing changes nothing it
+ * measures. One row per probe in `probes.jsonl`, stamped with the turns the
+ * learner had had. */
+static int run_probes(ctx_t *c, json_t **out, char *err, size_t errlen)
+{
+    char *path = NULL;
+    const char *p = getenv("MJ2_PROBES");
+    if (p && *p)
+        path = expand_home(p);
+    else {
+        char *root = conf_repo_root();
+        path = root ? join(root, "probes.txt") : xstrdup("probes.txt");
+        free(root);
+    }
+    char *text = read_file(path, NULL);
+    if (!text) {
+        snprintf(err, errlen, "%s: unreadable (the probe questions, one a line)", path);
+        free(path);
+        return -1;
+    }
+    free(path);
+    char *file = join(c->dir, "probes.jsonl");
+    json_t *rows = jarr();
+    int rc = 0;
+    time_t now = time(NULL);
+    char stamp[32];
+    strftime(stamp, sizeof stamp, "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
+    char *sv = NULL;
+    for (char *q = strtok_r(text, "\n", &sv); q && !rc; q = strtok_r(NULL, "\n", &sv)) {
+        while (*q == ' ' || *q == '\t')
+            q++;
+        if (!*q || *q == '#')
+            continue;
+        history_t empty = {0};
+        speak_cfg_t cfg = c->cfg;
+        cfg.alone = cfg.probe = true;
+        char *reply = NULL;
+        json_t *rec = NULL;
+        pthread_mutex_lock(&c->mu);
+        rc = speak_turn(c->l, &cfg, &empty, q, &reply, &rec, err, errlen);
+        size_t turns = c->l->turns, lexicon = c->l->n, say = lex_speakable_count(c->l);
+        pthread_mutex_unlock(&c->mu);
+        char *sp = join(c->dir, "speaking.txt");
+        unlink(sp);
+        free(sp);
+        history_free(&empty);
+        if (rc)
+            break;
+        json_t *row = jobj();
+        jobj_set(row, "time", jstr(stamp));
+        jobj_set(row, "turns", ju64(turns));
+        jobj_set(row, "lexicon", ju64(lexicon));
+        jobj_set(row, "speakable", ju64(say));
+        jobj_set(row, "probe", jstr(q));
+        jobj_set(row, "reply", jstr(reply));
+        jobj_set(row, "words", jclone(jobj_get(rec, "words")));
+        jobj_set(row, "coherence", jclone(jobj_get(rec, "coherence_final")));
+        jobj_set(row, "failed_requirement", jclone(jobj_get(rec, "failed_requirement")));
+        jobj_set(row, "checks", jclone(jobj_get(rec, "checks")));
+        char *line = json_dump(row);
+        FILE *f = fopen(file, "a");
+        if (f) {
+            fprintf(f, "%s\n", line);
+            fclose(f);
+        }
+        free(line);
+        jarr_push(rows, row);
+        free(reply);
+        json_free(rec);
+    }
+    free(text);
+    free(file);
+    if (rc) {
+        json_free(rows);
+        return -1;
+    }
+    *out = rows;
+    return 0;
+}
+
 static void print_record(const json_t *rec)
 {
     sb_t b;
@@ -582,6 +666,12 @@ static void *serve_conn(void *arg)
         json_t *o = stats_json(c);
         pthread_mutex_unlock(&c->mu);
         reply_json(k->fd, 200, o);
+    } else if (post && !strcmp(r.path, "/v1/probe")) {
+        json_t *rows;
+        if (run_probes(c, &rows, err, sizeof err))
+            reply_json(k->fd, 502, message(err));
+        else
+            reply_json(k->fd, 200, rows);
     } else if (post && (!strcmp(r.path, "/v1/talk") || !strcmp(r.path, "/v1/hear"))) {
         json_t *v = json_parse(r.body ? r.body : "", r.body_len, err, sizeof err);
         const json_t *m = v ? jobj_get(v, !strcmp(r.path, "/v1/talk") ? "message" : "text") : NULL;
@@ -617,7 +707,7 @@ static void *serve_conn(void *arg)
         json_free(v);
     } else {
         reply_json(k->fd, 404, message("routes: GET /health, GET /v1/stats, POST /v1/talk {message}, "
-                                       "POST /v1/hear {text}; talk takes \"alone\": true for the circuit by itself"));
+                                       "POST /v1/hear {text}, POST /v1/probe; talk takes \"alone\": true for the circuit by itself"));
     }
     http_req_free(&r);
     close(k->fd);
@@ -663,6 +753,7 @@ static void usage(void)
           "  learner hear FILE...        read English text\n"
           "  learner stats               what it knows\n"
           "  learner export FILE.c       the discrete circuit as C\n"
+          "  learner probe               the fixed questions to the circuit alone (probes.jsonl)\n"
           "  learner serve [--bind B]    the HTTP API (default 127.0.0.1:8092)\n"
           "  learner reset --yes         forget everything\n"
           "The engine (xks) must be up: make serve.\n",
@@ -716,7 +807,24 @@ int main(int argc, char **argv)
         rc = cmd_talk(&c, argc - 2, argv + 2);
     else if (!strcmp(cmd, "export"))
         rc = cmd_export(&c, argc - 2, argv + 2);
-    else if (!strcmp(cmd, "hear"))
+    else if (!strcmp(cmd, "probe")) {
+        json_t *rows;
+        rc = run_probes(&c, &rows, err, sizeof err) ? 1 : 0;
+        if (rc)
+            fprintf(stderr, "error: %s\n", err);
+        for (size_t i = 0; !rc && i < rows->n; i++) {
+            const json_t *r = rows->items[i];
+            printf("probe: %s\nalone: %s\n", jobj_get(r, "probe")->s, jobj_get(r, "reply")->s);
+            const json_t *co = jobj_get(r, "coherence"), *fr = jobj_get(r, "failed_requirement");
+            if (co && co->t == J_NUM)
+                fprintf(stderr, "  coherence %.2f, requirements %s\n", co->f,
+                        fr && fr->t == J_BOOL && fr->b ? "failed" : "passed");
+            else
+                fprintf(stderr, "  (no words)\n");
+        }
+        if (!rc)
+            json_free(rows);
+    } else if (!strcmp(cmd, "hear"))
         rc = cmd_hear(&c, argc - 2, argv + 2);
     else if (!strcmp(cmd, "stats")) {
         json_t *o = stats_json(&c);
