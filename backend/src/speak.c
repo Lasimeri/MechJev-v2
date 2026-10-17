@@ -552,6 +552,28 @@ static int rerank(learner_t *l, const speak_cfg_t *cfg, const char *state, char 
     return rc;
 }
 
+/* Only the step variables about the reply so far (the circuit speaking
+ * alone still has the engine's perception of what it has said). */
+static int ask_step_vars(const speak_cfg_t *cfg, const char *state, char **said, size_t t, float *slots,
+                         json_t *seen, cost_t *cost, char *err, size_t errlen)
+{
+    json_t *qs = jobj();
+    char *so_far = render_words(said, t);
+    vars_questions(cfg, true, so_far, qs);
+    free(so_far);
+    if (!qs->n) {
+        json_free(qs);
+        return 0;
+    }
+    json_t *resp = NULL;
+    json_t *ans = ask(cfg, state, qs, &resp, cost, err, errlen);
+    if (!ans)
+        return -1;
+    vars_read(cfg, true, ans, slots, seen);
+    json_free(resp);
+    return 0;
+}
+
 /* The circuit unsure: the lexicon put to the engine in groups, each
  * group's word (when it beats "not listed") a candidate. */
 static size_t widen(learner_t *l, const speak_cfg_t *cfg, const char *state, char **said, size_t t,
@@ -709,80 +731,103 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
         uint64_t seed = clock_seed();
         uint8_t bits[N_IN];
         learner_inputs(l, slots, prev, (unsigned)t, seed, ABL_NONE, bits);
-        int32_t cands[MAX_OPTS];
-        int32_t mine[MAX_OPTS * 2];
+        int32_t ranked[MAX_OPTS * 2], cands[MAX_OPTS];
         double p_first = 0;
         bool allow_end = t > 0 && sentence_end(said[t - 1]);
-        size_t got = learner_propose(l, bits, mine, MAX_OPTS * 2, allow_end, &p_first);
-        size_t nc = 0;
-        for (size_t i = 0; i < got && nc < cfg->propose; i++)
-            if (allowed(l, said, t, mine[i]))
-                cands[nc++] = mine[i];
-        int32_t top1 = nc ? cands[0] : -1;
-        size_t own = nc;
-        bool unsure = nc == 0 || p_first < cfg->sure_p;
-        if (unsure) {
-            int32_t wide[WIDEN_ADD];
-            size_t nw = widen(l, cfg, state, said, t, cands, nc, wide, WIDEN_ADD, &cost, err, errlen);
-            for (size_t i = 0; i < nw && nc < MAX_OPTS; i++)
-                cands[nc++] = wide[i];
-            widened += nw > 0;
+        size_t got = learner_propose(l, bits, ranked, MAX_OPTS * 2, allow_end, &p_first);
+        size_t nr = 0; /* the circuit's ranking, allowed words only */
+        for (size_t i = 0; i < got; i++)
+            if (allowed(l, said, t, ranked[i]))
+                ranked[nr++] = ranked[i];
+        int32_t top1 = nr ? ranked[0] : -1;
+        /* What the engine is shown: every word the learner may say while they
+         * fit in one Choice (a teacher sees a beginner's whole vocabulary),
+         * else the circuit's best and, when it is unsure, words the engine
+         * adds from the lexicon. */
+        size_t nc = 0, own;
+        bool everything = got < MAX_OPTS * 2 && nr <= MAX_OPTS;
+        if (everything) {
+            for (size_t i = 0; i < nr; i++)
+                cands[nc++] = ranked[i];
+            own = nc < cfg->propose ? nc : cfg->propose;
+        } else {
+            for (size_t i = 0; i < nr && nc < cfg->propose; i++)
+                cands[nc++] = ranked[i];
+            own = nc;
+            if (!cfg->alone && (nc == 0 || p_first < cfg->sure_p)) {
+                int32_t wide[WIDEN_ADD];
+                size_t nw = widen(l, cfg, state, said, t, cands, nc, wide, WIDEN_ADD, &cost, err, errlen);
+                for (size_t i = 0; i < nw && nc < MAX_OPTS; i++)
+                    cands[nc++] = wide[i];
+                widened += nw > 0;
+            }
         }
         json_t *step = jobj();
         jobj_set(step, "t", ju64(t));
         jobj_set(step, "seed_inputs", ju64(seed));
         jobj_set(step, "circuit_top1", top1 >= 0 ? jstr(l->v[top1].word) : jnull());
         jobj_set(step, "circuit_p_first", jf64(round(p_first * 1e4) / 1e4));
+        jobj_set(step, "shown_all", jbool(everything));
         if (!nc) {
             jobj_set(step, "pick", jnull());
             jobj_set(step, "note", jstr("no word it knows may come here"));
             jarr_push(trace, step);
             break;
         }
-        step_t st = {0};
-        float used[VAR_SLOTS];
-        memcpy(used, slots, sizeof used); /* what the circuit saw, before this step's answers */
         json_t *step_vars = jobj();
-        if (rerank(l, cfg, state, said, t, cands, nc, slots, step_vars, &st, &cost, err, errlen)) {
-            json_free(step);
-            json_free(step_vars);
-            json_free(trace);
-            json_free(turn_vars);
-            free(said);
-            free(ex);
-            free(state);
-            return -1;
+        int32_t said_word;
+        if (cfg->alone) {
+            /* The circuit alone: its own first word, no engine choice. The
+             * engine still perceives the reply so far (the step variables). */
+            if (ask_step_vars(cfg, state, said, t, slots, step_vars, &cost, err, errlen)) {
+                json_free(step);
+                json_free(step_vars);
+                goto fail;
+            }
+            said_word = top1;
+            jobj_set(step, "pick", jstr(l->v[said_word].word));
+            jobj_set(step, "from", jstr("circuit alone"));
+        } else {
+            step_t st = {0};
+            float used[VAR_SLOTS];
+            memcpy(used, slots, sizeof used); /* what the circuit saw, before this step's answers */
+            if (rerank(l, cfg, state, said, t, cands, nc, slots, step_vars, &st, &cost, err, errlen)) {
+                json_free(step);
+                json_free(step_vars);
+                goto fail;
+            }
+            bool from_circuit = false;
+            for (size_t i = 0; i < own; i++)
+                from_circuit |= cands[i] == st.top;
+            example_t *e = &ex[nex++];
+            memcpy(e->vars, used, sizeof e->vars);
+            e->prev = prev;
+            e->pos = (uint16_t)t;
+            e->n = (uint16_t)st.n;
+            memcpy(e->opt, st.opt, st.n * sizeof *st.opt);
+            memcpy(e->q, st.q, st.n * sizeof *st.q);
+            e->top = st.top;
+            e->id = seed;
+            l->v[st.top].picked++;
+            l->steps++;
+            said_word = st.pick;
+            jobj_set(step, "seed_draw", ju64(st.seed));
+            jobj_set(step, "pick", jstr(l->v[st.pick].word));
+            jobj_set(step, "engine_top", jstr(l->v[st.top].word));
+            jobj_set(step, "from", jstr(from_circuit ? "circuit" : everything ? "vocabulary" : "widened"));
+            jobj_set(step, "p", jf64(st.p_pick));
+            jobj_set(step, "p_top", jf64(st.p_top));
+            jobj_set(step, "options", st.shown);
         }
-        bool from_circuit = false;
-        for (size_t i = 0; i < own; i++)
-            from_circuit |= cands[i] == st.top;
-        example_t *e = &ex[nex++];
-        memcpy(e->vars, used, sizeof e->vars);
-        e->prev = prev;
-        e->pos = (uint16_t)t;
-        e->n = (uint16_t)st.n;
-        memcpy(e->opt, st.opt, st.n * sizeof *st.opt);
-        memcpy(e->q, st.q, st.n * sizeof *st.q);
-        e->top = st.top;
-        e->id = seed;
-        l->v[st.top].picked++;
-        l->steps++;
-        jobj_set(step, "seed_draw", ju64(st.seed));
-        jobj_set(step, "pick", jstr(l->v[st.pick].word));
-        jobj_set(step, "engine_top", jstr(l->v[st.top].word));
-        jobj_set(step, "from", jstr(from_circuit ? "circuit" : "widened"));
-        jobj_set(step, "p", jf64(st.p_pick));
-        jobj_set(step, "p_top", jf64(st.p_top));
-        jobj_set(step, "options", st.shown);
         jobj_set(step, "reply_vars", step_vars);
         jobj_set(step, "ms", jf64(round(now_ms() - ts)));
         jarr_push(trace, step);
-        if (!strcmp(l->v[st.pick].word, END)) {
+        if (!strcmp(l->v[said_word].word, END)) {
             ended = true;
             break;
         }
-        said[t++] = l->v[st.pick].word;
-        prev = st.pick;
+        said[t++] = l->v[said_word].word;
+        prev = said_word;
         if (cfg->on_word) {
             char *so_far = render_words(said, t);
             cfg->on_word(cfg->on_word_ud, so_far);
@@ -833,13 +878,14 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     evalres_t no_vars = learner_eval(l, ex, nex, ABL_CONCEPTS);
     evalres_t no_prev = learner_eval(l, ex, nex, ABL_PREV);
     double tl = now_ms();
-    size_t passes = cfg->learn ? learner_learn(l, ex, nex, cfg->train_ms) : 0;
+    size_t passes = cfg->learn && !cfg->alone ? learner_learn(l, ex, nex, cfg->train_ms, 0) : 0;
     double train_ms = now_ms() - tl;
 
     json_t *rec = jobj();
     jobj_set(rec, "turn", ju64(l->turns));
     jobj_set(rec, "person", jstr(person));
     jobj_set(rec, "reply", jstr(*reply));
+    jobj_set(rec, "mode", jstr(cfg->alone ? "alone" : "taught"));
     jobj_set(rec, "failed_requirement", jbool(failed));
     jobj_set(rec, "lexicon", ju64(l->n));
     jobj_set(rec, "new_words", ju64(l->n - lex_before));
@@ -870,4 +916,11 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     free(ex);
     free(state);
     return 0;
+fail:
+    json_free(trace);
+    json_free(turn_vars);
+    free(said);
+    free(ex);
+    free(state);
+    return -1;
 }

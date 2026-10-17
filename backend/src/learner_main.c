@@ -293,8 +293,16 @@ static void print_record(const json_t *rec)
 static int cmd_talk(ctx_t *c, int argc, char **argv)
 {
     char err[1024];
-    bool trace = argc > 0 && !strcmp(argv[0], "--trace"); /* the whole record after each turn */
-    if (trace) {
+    bool trace = false; /* the whole record after each turn */
+    while (argc > 0 && argv[0][0] == '-' && argv[0][1] == '-') {
+        if (!strcmp(argv[0], "--trace"))
+            trace = true;
+        else if (!strcmp(argv[0], "--alone"))
+            c->cfg.alone = true; /* the circuit speaks by itself */
+        else {
+            fprintf(stderr, "error: talk takes --trace and --alone, not %s\n", argv[0]);
+            return 2;
+        }
         argc--;
         argv++;
     }
@@ -575,7 +583,8 @@ static int cmd_serve(ctx_t *c, const char *bind)
 static void usage(void)
 {
     fputs("learner (MechJev-v2): a language learner taught by the decision engine's choices\n"
-          "  learner talk [--trace] [MESSAGE]  one turn, or a conversation on the terminal\n"
+          "  learner talk [--trace] [--alone] [MESSAGE]  one turn, or a conversation; --alone:\n"
+          "                              the circuit speaks with no engine choice\n"
           "  learner hear FILE...        read English text\n"
           "  learner stats               what it knows\n"
           "  learner export FILE.c       the discrete circuit as C\n"

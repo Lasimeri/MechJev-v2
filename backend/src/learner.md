@@ -59,10 +59,12 @@ recomputed from the seed), and the replay buffer. Version 1 (the retired
 word-window learner) and any other shape are refused, never converted.
 
 Measured (`backend/tests/learner_test.c`, 2026-10-17, no model):
-- **Grounding toy.** The right word depends on one variable only: held-out
-  agreement goes from 0.000 to 0.925 after training on 60 examples
-  (10,141 passes, 1.5 s).
-- **Blanking the variable** brings it to 0.550 (chance is 0.5).
-- **Blanking the word before** leaves 0.925.
-- **Relaxed and discrete circuits** pick the same word on 1.000.
+- **Grounding toy** (8 seeds, 6,000 passes each; mean, min to max). The right
+  word depends on one variable only: held-out agreement 0.912 (0.825 to
+  0.950); blanking the variable gives 0.553 (0.525 to 0.575, chance 0.5);
+  blanking the word before gives 0.881 (0.725 to 0.950); relaxed and
+  discrete circuits pick the same word on 0.981 (0.900 to 1.000). A seed
+  trained twice gives identical circuits. An earlier single run read
+  0.925; training bounded by time made that number vary from 0.800 to
+  0.925 between runs, so tests now cap the passes instead.
 - **The store** reloads identical; version 1 is refused.

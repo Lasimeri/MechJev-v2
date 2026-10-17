@@ -68,7 +68,9 @@ make stop       # stop the engine
 ```
 
 `backend/build/learner`:
-- `talk --trace` prints each turn's whole record;
+- `talk --trace` prints each turn's whole record, and `talk --alone` lets the
+  circuit speak by itself (the engine still perceives and judges, but
+  chooses no word: what it has acquired, unaided);
 - `hear FILE` reads English text (words only: hearing grows the lexicon,
   it never teaches what follows what);
 - `export FILE.c` writes the discrete circuit as a C function;
@@ -139,8 +141,8 @@ Every number comes with the command or file that produced it.
 | Jev's 28 published questions (Mechanical Jev's `make closeness`) | 27 of 28 of Jev's decisions, mean difference 0.118. Today's Rust xks gives the same rows (difference 0.0); its 28 of 28 dates from September, on an older llama.cpp and site | `backend/tests/parity/closeness-*.jsonl` |
 | JSON against serde_json 1.0.151 | byte-identical on 8 cases and 20,000 generated numbers | `make check`, `backend/tests/gen_numbers.c` |
 | the circuit's 16 gates | equal their truth tables | `backend/tests/learner_test.c` |
-| grounding toy: the right word depends on one variable only (60 examples) | held-out agreement 0.000 before, 0.925 after; 0.550 with the variable blanked (chance 0.5), 0.925 with the word before blanked | `backend/tests/learner_test.c` |
-| relaxed against discrete circuit | the same word on 1.000 of held-out inputs | `backend/tests/learner_test.c` |
+| grounding toy: the right word depends on one variable only (60 examples, 8 seeds, 6,000 passes each; mean, min to max) | held-out agreement 0.912 (0.825 to 0.950); with the variable blanked 0.553 (0.525 to 0.575, chance 0.5); with the word before blanked 0.881 (0.725 to 0.950). One seed trained twice: identical circuits | `backend/tests/learner_test.c` |
+| relaxed against discrete circuit | the same word on 0.981 of held-out inputs (0.900 to 1.000 over the 8 seeds) | `backend/tests/learner_test.c` |
 | the exported C circuit, compiled | identical to the interpreter on 200 inputs | `backend/tests/learner_test.c` |
 | a word of a reply, live (35B at 50% on the GPU) | 5 to 12 s a step, 15 s a word on average (the third turn of the first conversation) | `turns.jsonl` |
 

@@ -377,7 +377,7 @@ static void replay_push(learner_t *l, const example_t *ex)
     l->nreplay++;
 }
 
-size_t learner_learn(learner_t *l, const example_t *ex, size_t n, double budget_ms)
+size_t learner_learn(learner_t *l, const example_t *ex, size_t n, double budget_ms, size_t max_passes)
 {
     double t0 = now_ms();
     trace_t t;
@@ -396,7 +396,7 @@ size_t learner_learn(learner_t *l, const example_t *ex, size_t n, double budget_
     }
     /* then rehearsal over everything kept, until the budget is spent */
     uint64_t s = l->seed ^ l->trained;
-    while (l->nreplay && now_ms() - t0 < budget_ms) {
+    while (l->nreplay && now_ms() - t0 < budget_ms && (!max_passes || passes < max_passes)) {
         const example_t *e = &l->replay[splitmix64(&s) % l->nreplay];
         train_one(l, e, e->id * 0x9E3779B97F4A7C15ull + splitmix64(&s), &t, gw, gs, ge);
         passes++;

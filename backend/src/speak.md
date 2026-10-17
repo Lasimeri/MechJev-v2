@@ -14,6 +14,11 @@ One turn of conversation, every word a decision of the engine.
    - **Inputs.** The variables' probabilities are drawn into bits with a
      seed from the realtime clock (the user's rule: the current time
      seeds each token).
+   - **What the engine is shown.** While every word the learner may say
+     fits in one Choice (24), the engine is shown all of them, ranked by
+     the circuit (a teacher sees a beginner's whole vocabulary; measured
+     2026-10-17: with only the circuit's 8, the word the reply needed was
+     often missing and the engine chose the least bad). Past 24:
    - **Proposals.** The circuit proposes its best 8 allowed words: no
      punctuation first or doubled, no repeated word or trigram, the end
      only after `. ? !`.
@@ -37,3 +42,9 @@ One turn of conversation, every word a decision of the engine.
    before learning them: with all inputs, with the variables blanked, with
    the previous word blanked. Then it learns, and the record goes to
    `curves.jsonl` and `turns.jsonl`.
+
+`learner talk --alone`: the circuit speaks by itself. The engine still
+answers the variables (its perception of the conversation and of the reply
+so far) and judges the requirements, but chooses no word. Nothing is
+learned. The words are the circuit's own first word at each step, so
+this shows what it has acquired.

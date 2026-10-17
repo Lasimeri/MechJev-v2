@@ -105,8 +105,10 @@ size_t learner_propose(const learner_t *l, const uint8_t *bits, int32_t *out, si
                        bool allow_end, double *p_first);
 /* Learn a turn's examples (a failed one only the engine's preference among the
  * words shown, never that its word was right), then rehearse the replay
- * buffer for at most budget_ms. Returns the passes made. */
-size_t learner_learn(learner_t *l, const example_t *ex, size_t n, double budget_ms);
+ * buffer for at most budget_ms, and at most max_passes passes in all (0: no
+ * cap; a test caps it, so a seed gives the same circuit every run). Returns
+ * the passes made. */
+size_t learner_learn(learner_t *l, const example_t *ex, size_t n, double budget_ms, size_t max_passes);
 /* Measure examples (prequentially: before learning them). */
 evalres_t learner_eval(const learner_t *l, const example_t *ex, size_t n, ablation_t abl);
 

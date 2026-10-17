@@ -23,6 +23,6 @@ Measured (`backend/tests/learner_test.c`):
 - the 16 gates on bits equal their truth tables;
 - the exported C, compiled with tcc, is identical to the interpreter on
   200 inputs;
-- on the grounding toy, the relaxed and discrete circuits pick the same
-  word on 1.000 of the held-out inputs (the paper reports a gap under 0.1%
+- on the grounding toy (8 seeds), the relaxed and discrete circuits pick the same
+  word on 0.981 of the held-out inputs, 0.900 to 1.000 (the paper reports a gap under 0.1%
   on MNIST).
