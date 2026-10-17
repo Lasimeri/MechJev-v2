@@ -17,6 +17,8 @@
 #include <stdlib.h>
 #include <string.h>
 #include <sys/socket.h>
+#include <fcntl.h>
+#include <sys/file.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -126,7 +128,40 @@ static void save_history(ctx_t *c)
     free(s);
 }
 
-static int open_ctx(ctx_t *c, char *err, size_t errlen)
+/* One process at a time writes the learner's data: `talk`, `hear` and
+ * `serve` hold an exclusive lock on its directory (flock on `lock`, the
+ * holder's pid written in it). A second writer would interleave saves and
+ * lose turns, so it is refused with the holder's pid. */
+static int take_lock(const char *dir, char *err, size_t errlen)
+{
+    char *path = join(dir, "lock");
+    int fd = open(path, O_RDWR | O_CREAT | O_CLOEXEC, 0600);
+    if (fd < 0) {
+        snprintf(err, errlen, "%s: %s", path, strerror(errno));
+        free(path);
+        return -1;
+    }
+    if (flock(fd, LOCK_EX | LOCK_NB)) {
+        char pid[32] = "";
+        ssize_t k = pread(fd, pid, sizeof pid - 1, 0);
+        pid[k > 0 ? k : 0] = 0;
+        snprintf(err, errlen,
+                 "the learner is in use by pid %s (a learner talk or serve); stop it first, or talk "
+                 "through it",
+                 *pid ? pid : "?");
+        close(fd);
+        free(path);
+        return -1;
+    }
+    char pid[32];
+    int n = snprintf(pid, sizeof pid, "%d", (int)getpid());
+    if (ftruncate(fd, 0) == 0 && pwrite(fd, pid, (size_t)n, 0) < 0)
+        n = 0;
+    free(path);
+    return fd; /* held until the process exits */
+}
+
+static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
 {
     memset(c, 0, sizeof *c);
     c->dir = data_dir();
@@ -134,6 +169,8 @@ static int open_ctx(ctx_t *c, char *err, size_t errlen)
         snprintf(err, errlen, "%s: %s", c->dir, strerror(errno));
         return -1;
     }
+    if (write && take_lock(c->dir, err, errlen) < 0)
+        return -1;
     c->store = join(c->dir, "learner.store");
     c->curves = join(c->dir, "curves.jsonl");
     c->history = join(c->dir, "history.json");
@@ -622,6 +659,12 @@ int main(int argc, char **argv)
             return 2;
         }
         char *dir = data_dir();
+        mkdir_p(dir);
+        if (take_lock(dir, err, sizeof err) < 0) {
+            fprintf(stderr, "error: %s\n", err);
+            free(dir);
+            return 1;
+        }
         const char *files[] = {"learner.store", "history.json"};
         for (size_t i = 0; i < 2; i++) {
             char *p = join(dir, files[i]);
@@ -632,7 +675,10 @@ int main(int argc, char **argv)
         free(dir);
         return 0;
     }
-    if (open_ctx(&c, err, sizeof err)) {
+    /* stats and export only read (the store is replaced by rename, never
+     * half written); the rest write and take the lock */
+    bool write = strcmp(cmd, "stats") && strcmp(cmd, "export");
+    if (open_ctx(&c, write, err, sizeof err)) {
         fprintf(stderr, "error: %s\n", err);
         return 1;
     }

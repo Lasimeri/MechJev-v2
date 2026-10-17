@@ -13,6 +13,11 @@ else `XKS_BIND`.
 | `serve [--bind]` | HTTP for the harness on 127.0.0.1:8092: `GET /health`, `GET /v1/stats`, `POST /v1/talk {message}`, `POST /v1/hear {text}` |
 | `reset --yes` | forget everything |
 
+One process at a time writes the learner's data: `talk`, `hear`, `serve` and
+`reset` hold an exclusive lock (flock on `lock` in the data directory, the
+holder's pid in it), and a second one is refused with that pid. `stats` and
+`export` only read: the store is replaced by rename, never half written.
+
 Data: `$MJ2_DATA`, else `$XDG_DATA_HOME/mechjev-v2`, else
 `~/.local/share/mechjev-v2`:
 - `learner.store`;
