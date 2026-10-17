@@ -207,3 +207,19 @@ int mkdir_p(const char *path)
     free(p);
     return (rc == 0 || errno == EEXIST) ? 0 : -1;
 }
+
+uint64_t splitmix64(uint64_t *s)
+{
+    uint64_t z = (*s += 0x9E3779B97F4A7C15ull);
+    z = (z ^ (z >> 30)) * 0xBF58476D1CE4E5B9ull;
+    z = (z ^ (z >> 27)) * 0x94D049BB133111EBull;
+    return z ^ (z >> 31);
+}
+
+uint64_t fnv1a(const char *s)
+{
+    uint64_t h = 1469598103934665603ull;
+    for (; *s; s++)
+        h = (h ^ (unsigned char)*s) * 1099511628211ull;
+    return h;
+}

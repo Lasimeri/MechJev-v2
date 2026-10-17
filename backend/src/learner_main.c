@@ -30,7 +30,7 @@
 #define DEFAULT_SEED 20261017ull
 
 typedef struct {
-    char *dir, *store, *curves, *history;
+    char *dir, *store, *curves, *history, *turns; /* turns: whole records, the per-word trace kept */
     learner_t *l;
     speak_cfg_t cfg;
     history_t h;
@@ -137,6 +137,7 @@ static int open_ctx(ctx_t *c, char *err, size_t errlen)
     c->store = join(c->dir, "learner.store");
     c->curves = join(c->dir, "curves.jsonl");
     c->history = join(c->dir, "history.json");
+    c->turns = join(c->dir, "turns.jsonl");
     struct stat st;
     if (stat(c->store, &st) == 0) {
         if (learner_load(c->store, &c->l, err, errlen))
@@ -150,7 +151,29 @@ static int open_ctx(ctx_t *c, char *err, size_t errlen)
         c->l->min_heard = (uint32_t)mh;
     speak_cfg_default(&c->cfg);
     c->cfg.engine = conf_get("MJ2_ENGINE", conf_get("XKS_BIND", "127.0.0.1:8090"));
+    sampling_t *s = &c->cfg.sampling;
+    const char *v;
+    if ((v = getenv("MJ2_TEMP")) && *v)
+        s->temp = strtod(v, NULL);
+    if ((v = getenv("MJ2_TOP_P")) && *v)
+        s->top_p = strtod(v, NULL);
+    if ((v = getenv("MJ2_MIN_P")) && *v)
+        s->min_p = strtod(v, NULL);
+    if ((v = getenv("MJ2_REPEAT_PENALTY")) && *v)
+        s->repeat_penalty = strtod(v, NULL);
+    if ((v = getenv("MJ2_TOP_K")) && *v)
+        s->top_k = atoi(v);
     load_checks(&c->cfg);
+    char *vars = getenv("MJ2_VARS") && *getenv("MJ2_VARS") ? expand_home(getenv("MJ2_VARS")) : NULL;
+    if (!vars) {
+        char *root = conf_repo_root();
+        vars = root ? join(root, "variables.txt") : xstrdup("variables.txt");
+        free(root);
+    }
+    int vr = vars_load(&c->cfg, c->l, vars, err, errlen);
+    free(vars);
+    if (vr)
+        return -1;
     load_history(c);
     pthread_mutex_init(&c->mu, NULL);
     return 0;
@@ -163,10 +186,12 @@ static void close_ctx(ctx_t *c)
     for (size_t i = 0; i < c->cfg.nchecks; i++)
         free(c->cfg.checks[i]);
     free(c->cfg.checks);
+    vars_free(&c->cfg);
     free(c->dir);
     free(c->store);
     free(c->curves);
     free(c->history);
+    free(c->turns);
 }
 
 static int persist(ctx_t *c, const json_t *rec, char *err, size_t errlen)
@@ -174,25 +199,31 @@ static int persist(ctx_t *c, const json_t *rec, char *err, size_t errlen)
     if (learner_save(c->l, c->store, err, errlen))
         return -1;
     save_history(c);
-    if (rec) {
-        FILE *f = fopen(c->curves, "a");
-        if (!f) {
-            snprintf(err, errlen, "%s: %s", c->curves, strerror(errno));
-            return -1;
-        }
-        json_t *row = jclone(rec);
-        /* the curve keeps the numbers; the per-word trace stays in the reply */
-        json_t *slim = jobj();
-        for (size_t i = 0; i < row->n; i++)
-            if (strcmp(row->keys[i], "trace"))
-                jobj_set(slim, row->keys[i], jclone(row->items[i]));
-        char *s = json_dump(slim);
-        fprintf(f, "%s\n", s);
-        free(s);
-        json_free(slim);
-        json_free(row);
-        fclose(f);
+    if (!rec)
+        return 0;
+    /* curves.jsonl keeps the numbers, one row a turn; turns.jsonl the whole
+     * record with every word's options, draw and seed. */
+    FILE *f = fopen(c->curves, "a"), *g = fopen(c->turns, "a");
+    if (!f || !g) {
+        snprintf(err, errlen, "%s: %s", !f ? c->curves : c->turns, strerror(errno));
+        if (f)
+            fclose(f);
+        if (g)
+            fclose(g);
+        return -1;
     }
+    json_t *slim = jobj();
+    for (size_t i = 0; i < rec->n; i++)
+        if (strcmp(rec->keys[i], "trace"))
+            jobj_set(slim, rec->keys[i], jclone(rec->items[i]));
+    char *s = json_dump(slim), *w = json_dump(rec);
+    fprintf(f, "%s\n", s);
+    fprintf(g, "%s\n", w);
+    free(s);
+    free(w);
+    json_free(slim);
+    fclose(f);
+    fclose(g);
     return 0;
 }
 
@@ -206,23 +237,67 @@ static int one_turn(ctx_t *c, const char *message, char **reply, json_t **rec, c
     return rc;
 }
 
+/* The reply as it grows, on one terminal line. */
+static void live_word(void *ud, const char *so_far)
+{
+    (void)ud;
+    printf("\r\033[Klearner: %s", so_far);
+    fflush(stdout);
+}
+
+static double num(const json_t *o, const char *k)
+{
+    const json_t *v = jobj_get(o, k);
+    return v && v->t == J_NUM ? v->f : 0;
+}
+
 static void say_turn(const char *reply, const json_t *rec)
 {
-    const json_t *w = jobj_get(rec, "words");
-    if (reply && *reply)
-        printf("learner: %s\n", reply);
-    else
-        printf("learner: (no words yet)\n");
-    fprintf(stderr, "  %llu words, %llu known, %llu it can say; agreed with the engine on %.0f%% of words; "
-                    "%.1f s a word\n",
-            (unsigned long long)(w ? w->u : 0), (unsigned long long)jobj_get(rec, "lexicon")->u,
-            (unsigned long long)jobj_get(rec, "speakable")->u, 100 * jobj_get(rec, "agree_top1")->f,
-            jobj_get(rec, "ms_per_word")->f / 1e3);
+    printf("\r\033[Klearner: %s\n", reply && *reply ? reply : "(no words yet)");
+    const json_t *ev = jobj_get(rec, "eval"), *nv = jobj_get(rec, "eval_no_variables"),
+                 *np = jobj_get(rec, "eval_no_prev_word");
+    fprintf(stderr,
+            "  %.0f words (%s), %.0f known, %.0f it can say; the circuit's first word was the engine's "
+            "on %.0f%% (%.0f%% without the variables, %.0f%% without the word before); %.1f s a word%s\n",
+            num(rec, "words"), jobj_get(rec, "length_planned")->s, num(rec, "lexicon"), num(rec, "speakable"),
+            100 * num(ev, "agree"), 100 * num(nv, "agree"), 100 * num(np, "agree"),
+            num(rec, "ms_per_word") / 1e3,
+            jobj_get(rec, "failed_requirement")->b ? "; failed a requirement: not learned from" : "");
+}
+
+static int cmd_export(ctx_t *c, int argc, char **argv)
+{
+    if (argc < 1) {
+        fprintf(stderr, "error: learner export FILE.c (the discrete circuit as C)\n");
+        return 2;
+    }
+    FILE *f = fopen(argv[0], "w");
+    if (!f || circuit_export(&c->l->circ, f, "mechjev_circuit") || fclose(f)) {
+        fprintf(stderr, "error: %s: %s\n", argv[0], strerror(errno));
+        return 1;
+    }
+    fprintf(stderr, "learner: the circuit (%d inputs, %d layers) written to %s\n", c->l->circ.n_in,
+            c->l->circ.n_layers, argv[0]);
+    return 0;
+}
+
+static void print_record(const json_t *rec)
+{
+    sb_t b;
+    sb_init(&b);
+    json_write_pretty(&b, rec);
+    puts(b.s);
+    sb_free(&b);
 }
 
 static int cmd_talk(ctx_t *c, int argc, char **argv)
 {
     char err[1024];
+    bool trace = argc > 0 && !strcmp(argv[0], "--trace"); /* the whole record after each turn */
+    if (trace) {
+        argc--;
+        argv++;
+    }
     if (argc > 0) {
         sb_t m;
         sb_init(&m);
@@ -238,6 +313,8 @@ static int cmd_talk(ctx_t *c, int argc, char **argv)
             return 1;
         }
         say_turn(reply, rec);
+        if (trace)
+            print_record(rec);
         free(reply);
         json_free(rec);
         sb_free(&m);
@@ -261,6 +338,8 @@ static int cmd_talk(ctx_t *c, int argc, char **argv)
             continue;
         }
         say_turn(reply, rec);
+        if (trace)
+            print_record(rec);
         free(reply);
         json_free(rec);
     }
@@ -282,7 +361,7 @@ static size_t hear_text(learner_t *l, const char *text)
         char **w;
         size_t n = split_words(one, &w);
         if (n) {
-            learner_hear(l, w, n, w, n);
+            learner_hear(l, w, n);
             sentences++;
         }
         free_words(w, n);
@@ -325,16 +404,21 @@ static json_t *stats_json(ctx_t *c)
     json_t *o = jobj();
     jobj_set(o, "lexicon", ju64(c->l->n));
     jobj_set(o, "speakable", ju64(lex_speakable_count(c->l)));
-    size_t protos = 0;
-    for (size_t i = 0; i < c->l->n; i++)
-        protos += c->l->v[i].proto != NULL;
-    jobj_set(o, "with_prototype", ju64(protos));
+    size_t used = 0;
+    for (int i = 0; i < VAR_SLOTS; i++)
+        used += c->l->slot[i] != NULL;
+    jobj_set(o, "variable_slots", ju64(used));
+    json_t *layers = jarr();
+    for (int i = 0; i < c->l->circ.n_layers; i++)
+        jarr_push(layers, ju64((uint64_t)c->l->circ.size[i]));
+    jobj_set(o, "circuit_inputs", ju64((uint64_t)c->l->circ.n_in));
+    jobj_set(o, "circuit_layers", layers);
     jobj_set(o, "turns", ju64(c->l->turns));
     jobj_set(o, "steps", ju64(c->l->steps));
-    jobj_set(o, "updates", ju64(c->l->updates));
+    jobj_set(o, "replay", ju64(c->l->nreplay));
+    jobj_set(o, "trained_passes", ju64(c->l->trained));
     jobj_set(o, "min_heard", ju64(c->l->min_heard));
     jobj_set(o, "seed", ju64(c->l->seed));
-    jobj_set(o, "bits", ju64(HD_BITS));
     jobj_set(o, "engine", jstr(c->cfg.engine));
     jobj_set(o, "store", jstr(c->store));
     jobj_set(o, "curves", jstr(c->curves));
@@ -491,9 +575,10 @@ static int cmd_serve(ctx_t *c, const char *bind)
 static void usage(void)
 {
     fputs("learner (MechJev-v2): a language learner taught by the decision engine's choices\n"
-          "  learner talk [MESSAGE]      one turn, or a conversation on the terminal\n"
+          "  learner talk [--trace] [MESSAGE]  one turn, or a conversation on the terminal\n"
           "  learner hear FILE...        read English text\n"
           "  learner stats               what it knows\n"
+          "  learner export FILE.c       the discrete circuit as C\n"
           "  learner serve [--bind B]    the HTTP API (default 127.0.0.1:8092)\n"
           "  learner reset --yes         forget everything\n"
           "The engine (xks) must be up: make serve.\n",
@@ -531,8 +616,11 @@ int main(int argc, char **argv)
         return 1;
     }
     int rc;
+    c.cfg.on_word = live_word;
     if (!strcmp(cmd, "talk"))
         rc = cmd_talk(&c, argc - 2, argv + 2);
+    else if (!strcmp(cmd, "export"))
+        rc = cmd_export(&c, argc - 2, argv + 2);
     else if (!strcmp(cmd, "hear"))
         rc = cmd_hear(&c, argc - 2, argv + 2);
     else if (!strcmp(cmd, "stats")) {

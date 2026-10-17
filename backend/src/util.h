@@ -45,4 +45,9 @@ char *expand_home(const char *p);
 char *run_dir(void);
 int mkdir_p(const char *path);
 
+/* splitmix64 (Steele, Lea, Flood 2014) and FNV-1a: seeded streams and
+ * string hashes, shared by the circuit, the learner and the speaker. */
+uint64_t splitmix64(uint64_t *s);
+uint64_t fnv1a(const char *s);
+
 #endif

@@ -18,8 +18,9 @@ Two parts, and only the first touches llama.cpp.
 
    The subject is Qwen3.8-35B-A3B Q4_K_M with 50% of its layers on the RTX
    3090 Ti. The 35B only ever decides; it never writes text.
-2. **The language learner** (`backend/`, C, no llama.cpp): a small model
-   built of bit operations that starts knowing a handful of words and
+2. **The language learner** (`backend/`, C, no llama.cpp): a conceptually
+   grounded logic gate circuit (see backend/src/learner.md), not
+   a chain over words. It starts knowing a handful of words and
    acquires language from its interactions with the engine. Its weights are
    its own; the 35B's never change.
 3. **The harness** (`frontend/`, Rust): Mechanical Jev's TUI (crossterm,
@@ -78,3 +79,19 @@ Two parts, and only the first touches llama.cpp.
    - encoding is bit-exact across runs;
    - a new word is learned from a few shots with the old ones kept.
 4. **The loop**, with the curves above.
+
+## Changes since this plan was written
+
+- **2026-10-17.** The first learner was a word-window (trigram) model in
+  hyperdimensional vectors, taught by the engine's picks. It was
+  rejected: "Don't just copy markov chains, that's cheating with this,
+  and any language produced will be incoherent". Its gate 2 replies
+  ("Are? You", "Thank you, you are like") showed exactly that.
+- **The replacement** is the user's direction: "Conceptually grounded
+  Aster-style circuit model with the local LLM decision model as
+  probability decider for variables and boolean reqs". See
+  `backend/src/learner.md`, `circuit.md`, `speak.md`, `variables.txt`
+  and `restrictions.txt`.
+- **Learned from the rejected version:** at 3.2 to 4.9 s a word, "(none of
+  these)" made silence the easy answer. The rerank now always picks a
+  word, and the lexicon is widened when the circuit is unsure.

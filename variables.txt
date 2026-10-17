@@ -1,0 +1,25 @@
+# The variables the decision engine decides for the learner's circuit. The
+# engine answers each as a typed question; its probability is the input.
+#   turn noul STATEMENT              about the conversation, once a turn
+#   step noul STATEMENT              about the reply so far, every word
+#   turn choice QUESTION | a | b...  a slot for each option
+# Each takes the next free input slots (64 in all). Append only: a slot's
+# meaning is fixed once the circuit has learned from it.
+turn noul The person's last message greets someone.
+turn noul The person's last message says goodbye.
+turn noul The person's last message thanks someone.
+turn noul The person's last message asks a question.
+turn noul The person's last message asks about the one replying.
+turn noul The person's last message tells something about the person.
+turn noul The person's last message expresses a feeling.
+turn noul The person's last message says the person likes something.
+turn noul The person's last message asks the one replying to do something.
+turn noul The person's last message agrees with something.
+turn noul The person's last message disagrees with something.
+turn noul The person's last message mentions a time or a day.
+turn choice What should a good reply to the person's last message do? | greet back | answer a question | ask a question | agree | thank | say goodbye | tell something
+step noul The reply so far ends with a finished sentence.
+step noul The reply so far already answers the person's last message.
+step noul The reply so far is about the one replying.
+step noul The reply so far is about the person.
+step noul The reply so far is a question.

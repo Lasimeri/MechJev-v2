@@ -29,10 +29,6 @@ $(B)/engine.o: $(SRC)/engine.c $(SRC)/*.h | $(B)
 $(B)/%.o: $(SRC)/%.c $(SRC)/*.h | $(B)
 	$(CC) $(CFLAGS) -c $< -o $@
 
-# POPCNT for the learner's Hamming distances only: -march=native everywhere would let
-# gcc contract float expressions (FMA) in the engine and break the parity.
-$(B)/hdc.o: CFLAGS += -mpopcnt
-
 $(B)/xks: $(ENGINE_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -L$(LLAMA_BUILD) -lllama -lggml -lggml-base -Wl,-rpath,$(LLAMA_BUILD) -lm
 
@@ -53,11 +49,11 @@ clean:
 	rm -rf $(B)
 
 # The learner links no llama.cpp: its decisions come from xks over HTTP.
-LEARNER_OBJS := $(B)/util.o $(B)/json.o $(B)/http.o $(B)/conf.o $(B)/hdc.o $(B)/learner.o \
+LEARNER_OBJS := $(B)/util.o $(B)/json.o $(B)/http.o $(B)/conf.o $(B)/circuit.o $(B)/learner.o \
                 $(B)/speak.o $(B)/learner_main.o
 
 $(B)/learner: $(LEARNER_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
-$(B)/learner_test: backend/tests/learner_test.c $(B)/learner.o $(B)/hdc.o $(B)/util.o
+$(B)/learner_test: backend/tests/learner_test.c $(B)/learner.o $(B)/circuit.o $(B)/util.o
 	$(CC) $(CFLAGS) -o $@ $^ -lm

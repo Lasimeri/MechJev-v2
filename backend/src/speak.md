@@ -1,29 +1,38 @@
 # speak.c
 
-One turn of conversation, every word a decision of the engine (generation
-as classification: jev-llm, talktojev).
+One turn of conversation, every word a decision of the engine.
 
-1. **Hear.** The person's words are counted and learned from.
-2. **How much to say.** The engine answers a Score: a word or two, one
-   sentence, two or three, a paragraph (3, 12, 30, 60 words). The cap is
-   the learner's stage, 3 + speakable / 4, so the replies grow as the
+1. **Hear.** The person's words are counted (the lexicon grows); nothing
+   else is learned from hearing.
+2. **The turn's variables.** Every `turn` line of `variables.txt`, and
+   "how long should the reply be" (3, 12, 30 or 60 words), go to the
+   engine in one request. The conversation is that request's state, so
+   the engine keeps it prefilled for the whole turn. The length is capped
+   at the learner's stage, 3 + speakable / 4: the replies grow as the
    vocabulary does.
 3. **Each word:**
-   - **Propose.** The learner proposes its best 8 words. Its rules: no
+   - **Inputs.** The variables' probabilities are drawn into bits with a
+     seed from the realtime clock (the user's rule: the current time
+     seeds each token).
+   - **Proposals.** The circuit proposes its best 8 allowed words: no
      punctuation first or doubled, no repeated word or trigram, the end
      only after `. ? !`.
-   - **Rerank.** The engine is asked one Choice. Each option is the
-     reply's last 8 words with a candidate added, as English (jev-llm's
-     rerank), plus `(none of these)`.
-   - **Widen.** If none fits, the speakable lexicon goes to the engine in
-     groups of 25 with `(not listed)`. The groups' winners are reranked.
-   - **Learn.** The pick is the learner's label, and its NLL is taken
-     before the update.
-4. **Restrictions.** `restrictions.txt`: each line is a Noul the engine
-   judges about the finished reply (Aster's restrictions list). The
-   probabilities go into the turn's record.
-
-The conversation, meaning the earlier turns and the person's message, is
-the request's state. It is the same for every word of a turn, so the
-engine keeps it on sequence 0, and each word costs only its question's
-tokens. The reply so far goes in the question.
+   - **Widening.** If the circuit's first word has probability under 0.25,
+     it is unsure, and the engine picks up to 6 more from the lexicon (in
+     groups of 25, each with `(not listed)`).
+   - **The rerank.** One Choice, each option the reply's last 8 words with
+     a candidate added, as English (jev-llm's rerank). The `step`
+     variables about the reply so far go in the same request and feed the
+     next word's inputs.
+   - **The word said** is drawn from the engine's distribution with the
+     user's sampling settings (temp 0.5, top-k 75, top-p 0.95, min-p 0.05,
+     repeat penalty 1.2, in llama.cpp's order), seeded from the clock.
+   - **The example** is the engine's own choice, with its distribution
+     over the shown words.
+4. **Requirements.** Each line of `restrictions.txt` is a Noul about the
+   finished reply. One below 0.5, or an empty reply, fails it: the turn's
+   examples are kept but never learned from (Aster's judge).
+5. **Measure, then learn.** The circuit is measured on the turn's examples
+   before learning them: with all inputs, with the variables blanked, with
+   the previous word blanked. Then it learns, and the record goes to
+   `curves.jsonl` and `turns.jsonl`.
