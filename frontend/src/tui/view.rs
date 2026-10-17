@@ -1059,10 +1059,15 @@ fn talk(f: &mut Frame, a: &mut App) {
         sidep.push(rule(0, "agreement, turn by turn", side - 1, true));
         let n = a.talk.turns.len();
         for t in &a.talk.turns[n.saturating_sub(10)..] {
-            let ag = t["eval"]["agree"].as_f64().unwrap_or(0.0);
             let mut row = vec![dim(format!("{:>4} ", t["turn"].as_u64().unwrap_or(0)))];
-            row.extend(bar(ag, side.saturating_sub(12), false));
-            row.push(dim(format!(" {:>3.0}%", ag * 100.0)));
+            // A turn of the circuit alone has nothing to agree with: no bar.
+            match t["eval"]["agree"].as_f64() {
+                Some(ag) => {
+                    row.extend(bar(ag, side.saturating_sub(12), false));
+                    row.push(dim(format!(" {:>3.0}%", ag * 100.0)));
+                }
+                None => row.push(faint("solo")),
+            }
             sidep.push(row);
         }
     }

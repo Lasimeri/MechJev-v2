@@ -170,19 +170,32 @@ Every number comes with the command or file that produced it.
 | relaxed against discrete circuit | the same word on 0.981 of held-out inputs (0.900 to 1.000 over the 8 seeds) | `backend/tests/learner_test.c` |
 | the exported C circuit, compiled | identical to the interpreter on 200 inputs | `backend/tests/learner_test.c` |
 | per-token scoring (RED): one context, the engine weakly preferring the wrong word (0.4 to 0.3), 8 seeds | the right word first among the shown: 0.200 (0.025 to 0.500) with the KL alone, 0.887 (0.725 to 1.000) with the per-token reward | `backend/tests/learner_test.c` |
-| a word of a reply, live (35B at 50% on the GPU) | 5 to 12 s a step, 15 s a word on average (the third turn of the first conversation) | `turns.jsonl` |
+| a word's step on the engine (rerank in 3 rotations, 5 step variables, coherence; 3 interleaved pairs) | 7.2 to 10.2 s unpadded; 5.4 to 5.5 s padded (`pad_equal`); 2.0 s padded at ubatch 2048 | `backend/src/engine.md` |
+| a word of a reply, live (35B at 50% on the GPU) | 16 to 25 s a word before the padding; 4 to 5 s after | `turns.jsonl` |
 
-The live learner is at its very beginning. Its first replies were
-"(no words yet)" twice, then "Are you? How are". The acquisition curve
-(vocabulary, agreement with the engine, the ablations, requirements
-passed) is recorded turn by turn in `curves.jsonl` and will be reported
-here as it grows.
+**The live learner, its first day** (`~/.local/share/mechjev-v2/curves.jsonl`):
+- **First replies:** "(no words yet)" twice, then "Are you? How are" and
+  "I! Am. You?".
+- **Fixes along the way:** the requirements deadlock, the engine shown
+  every word it can say, the judge naming the newest reply, the
+  per-token scores, the word said being the engine's choice, padding, and
+  always widening.
+- **Taught:** after those, "Hello! Are you happy today?" got "Yes. I am
+  happy." and "I am happy too. Do you like music?" got "Yes. I like
+  music.", both passing every requirement (coherence 0.74 and 0.72).
+- **Alone:** the circuit by itself (no word chosen by the engine) answered
+  "Hello! Are you happy today?" with "Yes, hello." (every requirement
+  passed, coherence 0.45).
+
+Fixed probes asked of the circuit alone after each block of conversation
+are the acquisition curve; the results are recorded here as they come.
+
 
 ## Not done yet
 
 - **No Xeon Phi cards** yet; the engine runs on this machine's CPU and
   GPU only.
-- **Cost per word** (11 to 25 s on the live learner) is measured on
+- **Cost per word** (4 to 5 s on the live learner) is measured on
   single turns, not yet interleaved against a baseline.
 - **Acquisition** is at its first dozen turns: the circuit's own word
   matches the engine's on 0 to 75% of a turn, and whether it leans on the

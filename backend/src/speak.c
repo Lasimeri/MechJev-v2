@@ -742,9 +742,11 @@ static json_t *eval_json(evalres_t r)
 {
     json_t *o = jobj();
     jobj_set(o, "n", ju64(r.n));
-    jobj_set(o, "agree", jf64(round(r.agree * 1e4) / 1e4));
-    jobj_set(o, "nll", jf64(round(r.nll * 1e4) / 1e4));
-    jobj_set(o, "relaxed_same", jf64(round(r.gap * 1e4) / 1e4));
+    /* nothing measured (a turn of the circuit alone has no examples): null,
+     * never a zero that reads as one */
+    jobj_set(o, "agree", r.n ? jf64(round(r.agree * 1e4) / 1e4) : jnull());
+    jobj_set(o, "nll", r.n ? jf64(round(r.nll * 1e4) / 1e4) : jnull());
+    jobj_set(o, "relaxed_same", r.n ? jf64(round(r.gap * 1e4) / 1e4) : jnull());
     return o;
 }
 
