@@ -176,12 +176,41 @@ bound to an orthogonal identifier, each word keeps a prototype per
 position. On marks and the end the memory loses by construction: without
 the reply's own words it cannot tell "after a word" from "after a mark".
 On words it is level with the circuit and the position baseline. So it has
-a say on words only (`memory_speaks`), its score `MJ2_MEMORY` times its
-similarity less the mean over those words; and that weight is **0 by
-default** (it learns but does not speak) until a live A/B shows what it
-does. Its measured strength is recall from few examples (the test: 12 of
-12 from one context each, 12 of 12 through 10% noise); whether that makes
-the learner adapt faster on the real conversation is the A/B's question.
+a say on words only (`memory_speaks`), and only on which word
+(`memory_rerank`): each word it holds gets `MJ2_MEMORY` times its
+similarity added, then those words are shifted together so their total
+probability is the circuit's. The circuit still decides a word against a
+mark against the end.
+
+That second rule came from the harm check (`tools/harm_ab.sh`, the probe
+at each weight, interleaved, on one store). With the memory's score added
+to the words alone, centred on their mean, the best word gained about 2.4
+logits over "." and the end:
+
+| weight | probes passed, round 1 | round 2 | the circuit alone said |
+| --- | --- | --- | --- |
+| 0 | 7/12 | 7/12 | "Yes. I am.", "I do too.", "Goodbye." |
+| 25, added | 0/12 | 3/12 | "Yes do I am.", "Yes do I do music." |
+
+With the rerank (`tools/harm_ab.sh 2 25 0`, the order flipped):
+
+| weight | round 1 | round 2 | in all | coherence |
+| --- | --- | --- | --- | --- |
+| 0 | 7/12 | 8/12 | 15/24 | 0.582, 0.600 |
+| 25, reranking | 4/12 | 6/12 | 10/24 | 0.521, 0.597 |
+
+The run-ons are gone ("Yes. I do music."), but nearly every first word
+becomes "Yes": the most frequent first word's prototype bundles the most
+contexts, so it is nearest to all of them. Still worse than without it,
+so the A/B stopped there and the weight stays 0. Not tried yet: taking
+each word's own mean similarity off its score (a per-word baseline), which
+would leave only what is particular to the context.
+
+The weight is **0 by default** (it learns but does not speak) until a
+live A/B shows what it does. Its measured strength is recall from few
+examples (the test: 12 of 12 from one context each, 12 of 12 through 10%
+noise); whether that makes the learner adapt faster on the real
+conversation is the A/B's question.
 
 "As of this word": the step variables a step sees were answered at the
 step before, about the reply one word shorter (the rerank asks them with

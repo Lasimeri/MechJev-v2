@@ -1,0 +1,5 @@
+# the few-shot A/B (tools/fewshot_ab.sh): the taught question, a paraphrase,
+# and a control nothing in the teaching is about
+What is your name?
+Tell me your name.
+Do you like music?

@@ -428,6 +428,7 @@ static int run_probes(ctx_t *c, json_t **out, char *err, size_t errlen)
             jobj_set(row, "speakable", ju64(say));
             jobj_set(row, "probe", jstr(q));
             jobj_set(row, "repeat", ju64((uint64_t)rep));
+            jobj_set(row, "memory_weight", jf64(c->l->mem_weight));
             jobj_set(row, "reply", jstr(reply));
             jobj_set(row, "words", jclone(jobj_get(rec, "words")));
             jobj_set(row, "coherence", jclone(jobj_get(rec, "coherence_final")));

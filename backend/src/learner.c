@@ -269,26 +269,40 @@ static bool memory_speaks(const learner_t *l, size_t i, bool allow_end)
            strcmp(l->v[i].word, END);
 }
 
-/* The memory's part of each candidate's score: mem_weight times its
- * similarity less the mean over the words it has a say on, so only which
- * words it prefers counts, not that contexts are alike at all (they share
- * every variable's identifier). Every other candidate gets 0. */
-static void memory_scores(const learner_t *l, const hv_t *context, bool allow_end, float *out)
+/* The memory reorders the words it has a say on, and only those: each gets
+ * mem_weight times its similarity added, then all of them are shifted
+ * together so their total probability is what the circuit gave them. So
+ * the circuit still decides a word against a mark against the end, and the
+ * memory which word. (Added to the words alone, centred on their mean, the
+ * best word gained about 2.4 logits over "." and the end: the circuit alone
+ * said "Yes do I do music." and passed 0 and 3 of 12 probes, against 7 and
+ * 7 without it, 2026-10-17.) */
+static void memory_rerank(const learner_t *l, const hv_t *context, bool allow_end, float *sc)
 {
-    double sum = 0;
-    size_t held = 0;
+    double mc = -INFINITY, ma = -INFINITY;
+    float *a = xmalloc((l->n ? l->n : 1) * sizeof *a);
     for (size_t i = 0; i < l->n; i++) {
-        out[i] = 0;
         if (!memory_speaks(l, i, allow_end))
             continue;
-        out[i] = (float)hd_sim(&l->mem, i, context);
-        sum += out[i];
-        held++;
+        a[i] = sc[i] + l->mem_weight * (float)hd_sim(&l->mem, i, context);
+        mc = fmax(mc, sc[i]);
+        ma = fmax(ma, a[i]);
     }
-    float mean = held ? (float)(sum / (double)held) : 0;
+    if (isinf(mc)) {
+        free(a);
+        return;
+    }
+    double zc = 0, za = 0;
+    for (size_t i = 0; i < l->n; i++)
+        if (memory_speaks(l, i, allow_end)) {
+            zc += exp(sc[i] - mc);
+            za += exp(a[i] - ma);
+        }
+    float shift = (float)((mc + log(zc)) - (ma + log(za)));
     for (size_t i = 0; i < l->n; i++)
         if (memory_speaks(l, i, allow_end))
-            out[i] = l->mem_weight * (out[i] - mean);
+            sc[i] = a[i] + shift;
+    free(a);
 }
 
 size_t learner_propose(const learner_t *l, const uint8_t *bits, const hv_t *context, int32_t *out, size_t k,
@@ -297,17 +311,16 @@ size_t learner_propose(const learner_t *l, const uint8_t *bits, const hv_t *cont
     uint8_t a[OUT_BITS];
     circuit_run(&l->circ, bits, a);
     float *sc = xmalloc((l->n ? l->n : 1) * sizeof *sc);
-    float *mem = NULL;
-    if (context && l->mem_weight > 0) {
-        mem = xmalloc((l->n ? l->n : 1) * sizeof *mem);
-        memory_scores(l, context, allow_end, mem);
-    }
+    for (size_t i = 0; i < l->n; i++)
+        if (candidate(l, (int32_t)i, allow_end))
+            sc[i] = score_bits(&l->v[i], a);
+    if (context && l->mem_weight > 0)
+        memory_rerank(l, context, allow_end, sc);
     size_t m = 0;
     float mx = -INFINITY;
     for (size_t i = 0; i < l->n; i++) {
         if (!candidate(l, (int32_t)i, allow_end))
             continue;
-        sc[i] = score_bits(&l->v[i], a) + (mem ? mem[i] : 0);
         mx = fmaxf(mx, sc[i]);
         size_t at = m;
         while (at > 0 && sc[out[at - 1]] < sc[i])
@@ -328,7 +341,6 @@ size_t learner_propose(const learner_t *l, const uint8_t *bits, const hv_t *cont
         *p_first = m ? exp((double)(sc[out[0]] - mx)) / z : 0;
     }
     free(sc);
-    free(mem);
     return m;
 }
 
