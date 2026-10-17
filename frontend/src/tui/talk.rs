@@ -1,0 +1,100 @@
+//! The talk screen's state: the conversation as the learner records it
+//! (`turns.jsonl` in its data directory, so turns from any client show:
+//! this screen, `mjev2 mcp`, `learner talk`), the reply growing word by
+//! word while a turn runs (`speaking.txt`, which the learner rewrites after
+//! every word), and the line being typed. Drawing is view.rs. See talk.md.
+
+use std::path::PathBuf;
+use std::time::{Duration, Instant};
+
+use serde_json::Value;
+
+use super::editor::Editor;
+
+/// How many turns are kept on screen.
+const KEEP: usize = 40;
+/// How often the learner's files are looked at.
+pub const POLL_FILES: Duration = Duration::from_millis(400);
+
+/// The learner's data directory, as the learner finds it (learner_main.c):
+/// `$MJ2_DATA`, else `$XDG_DATA_HOME/mechjev-v2`, else
+/// `~/.local/share/mechjev-v2`.
+pub fn data_dir() -> PathBuf {
+    if let Some(d) = std::env::var_os("MJ2_DATA").filter(|v| !v.is_empty()) {
+        return PathBuf::from(super::app::expand_home(&d.to_string_lossy()));
+    }
+    if let Some(x) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
+        return PathBuf::from(x).join("mechjev-v2");
+    }
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share/mechjev-v2")
+}
+
+pub struct Talk {
+    pub input: Editor,
+    /// The last turns' records, oldest first.
+    pub turns: Vec<Value>,
+    /// The reply so far of a turn in progress.
+    pub speaking: Option<String>,
+    /// Rows scrolled up from the bottom of the conversation.
+    pub back: usize,
+    turns_len: u64,
+    polled: Option<Instant>,
+}
+
+impl Default for Talk {
+    fn default() -> Self {
+        Self {
+            input: Editor::new(true),
+            turns: Vec::new(),
+            speaking: None,
+            back: 0,
+            turns_len: u64::MAX,
+            polled: None,
+        }
+    }
+}
+
+impl Talk {
+    /// Read the learner's files when due; whether anything shown changed.
+    pub fn poll(&mut self) -> bool {
+        if self.polled.is_some_and(|t| t.elapsed() < POLL_FILES) {
+            return false;
+        }
+        self.polled = Some(Instant::now());
+        let dir = data_dir();
+        let mut changed = false;
+        let len = std::fs::metadata(dir.join("turns.jsonl")).map_or(0, |m| m.len());
+        if len != self.turns_len {
+            self.turns_len = len;
+            let text = std::fs::read_to_string(dir.join("turns.jsonl")).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+            self.turns = lines[lines.len().saturating_sub(KEEP)..]
+                .iter()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect();
+            changed = true;
+        }
+        let speaking = std::fs::read_to_string(dir.join("speaking.txt")).ok();
+        if speaking != self.speaking {
+            self.speaking = speaking;
+            changed = true;
+        }
+        changed
+    }
+
+    /// The last turn's record, the numbers the side panel shows.
+    pub fn last(&self) -> Option<&Value> {
+        self.turns.last()
+    }
+}
+
+/// A turn's words with their per-token scores: `morning +0.22  ? -0.02`.
+pub fn scored_words(turn: &Value) -> String {
+    let mut out = Vec::new();
+    for s in turn["trace"].as_array().map(Vec::as_slice).unwrap_or_default() {
+        if let (Some(w), Some(r)) = (s["pick"].as_str(), s["reward"].as_f64()) {
+            out.push(format!("{w} {r:+.2}"));
+        }
+    }
+    out.join("  ")
+}

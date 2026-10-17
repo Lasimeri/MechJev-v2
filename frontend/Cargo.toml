@@ -1,0 +1,28 @@
+[package]
+name = "mjev2"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.85"
+license = "MIT OR Apache-2.0"
+description = "MechJev-v2's front end: Mechanical Jev's TUI reused as the harness for the decision engine and the language learner, with an MCP side"
+repository = "https://github.com/Lasimeri/MechJev-v2"
+
+[lib]
+name = "mjev2"
+path = "src/lib.rs"
+
+[[bin]]
+name = "mjev2"
+path = "src/main.rs"
+
+[dependencies]
+serde = { version = "1", features = ["derive"] }
+serde_json = { version = "1", features = ["preserve_order"] }
+ureq = { version = "2", features = ["json"] }
+clap = { version = "4", features = ["derive", "env"] }
+thiserror = "1"
+crossterm = "0.28"
+
+[profile.release]
+opt-level = 3
+lto = "thin"

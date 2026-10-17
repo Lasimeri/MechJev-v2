@@ -268,18 +268,36 @@ static int one_turn(ctx_t *c, const char *message, char **reply, json_t **rec, c
 {
     pthread_mutex_lock(&c->mu);
     int rc = speak_turn(c->l, &c->cfg, &c->h, message, reply, rec, err, errlen);
+    char *sp = join(c->dir, "speaking.txt");
+    unlink(sp); /* the turn is over: nothing is being said */
+    free(sp);
     if (!rc)
         rc = persist(c, *rec, err, errlen);
     pthread_mutex_unlock(&c->mu);
     return rc;
 }
 
-/* The reply as it grows, on one terminal line. */
+/* The reply as it grows: written to `speaking.txt` in the data directory
+ * after every word (the TUI shows it live, whoever asked), and on a
+ * terminal, on one line. */
+static bool g_terminal;
+
 static void live_word(void *ud, const char *so_far)
 {
-    (void)ud;
-    printf("\r\033[Klearner: %s", so_far);
-    fflush(stdout);
+    const ctx_t *c = ud;
+    char *tmp = join(c->dir, "speaking.txt.tmp"), *path = join(c->dir, "speaking.txt");
+    FILE *f = fopen(tmp, "w");
+    if (f) {
+        fputs(so_far, f);
+        if (fclose(f) == 0)
+            rename(tmp, path);
+    }
+    free(tmp);
+    free(path);
+    if (g_terminal) {
+        printf("\r\033[Klearner: %s", so_far);
+        fflush(stdout);
+    }
 }
 
 static double num(const json_t *o, const char *k)
@@ -684,6 +702,8 @@ int main(int argc, char **argv)
     }
     int rc;
     c.cfg.on_word = live_word;
+    c.cfg.on_word_ud = &c;
+    g_terminal = !strcmp(cmd, "talk");
     if (!strcmp(cmd, "talk"))
         rc = cmd_talk(&c, argc - 2, argv + 2);
     else if (!strcmp(cmd, "export"))

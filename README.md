@@ -59,13 +59,32 @@ You need:
 - gcc and tcc (the export check compiles with tcc).
 
 ```sh
-make            # build backend/build/xks and backend/build/learner
+make            # build the engine, the learner and the front end (mjev2)
 make check      # the checks that need no model
+make watch      # the TUI in tmux session jev2, opened in a Konsole window
+make tui        # the TUI on this terminal (t: the talk screen)
 make serve      # start the engine on 127.0.0.1:8090 (loads the 35B)
-make talk       # talk with the learner on this terminal
+make talk       # a bare conversation with the learner on this terminal
 make stats      # what it knows
 make stop       # stop the engine
 ```
+
+**The TUI** (`frontend/target/release/mjev2`) is Mechanical Jev's,
+reused as the management interface, with a talk screen added:
+- **Left:** the conversation, each reply with its words' per-token scores
+  under it, the reply growing word by word while a turn runs.
+- **Right:** what the learner knows and how it is learning: agreement with
+  the engine, also without the variables or the word before; coherence;
+  requirements; and the agreement turn by turn.
+- **Starting.** The first thing said starts the engine and the learner if
+  they are not up.
+- **The rest.** Mechanical Jev's other screens (ask, examples, server)
+  still put typed questions to the engine.
+
+**MCP.** `mjev2 mcp` lets an agent drive the same TUI a person watches
+(`screen`, `type`, `keys`), talk to the learner (`talk`, `hear`, `stats`)
+and ask the engine (`judge`). Register it with
+`claude mcp add --scope user mjev2 -- <checkout>/frontend/target/release/mjev2 mcp`.
 
 `backend/build/learner`:
 - `talk --trace` prints each turn's whole record, and `talk --alone` lets the
@@ -160,14 +179,14 @@ here as it grows.
 
 ## Not done yet
 
-- **The Rust harness** (`frontend/`, not yet in the repository):
-  Mechanical Jev's TUI reused as the management interface, with a talk
-  screen and an MCP side so the same interface can be driven by a person
-  and by an agent.
 - **No Xeon Phi cards** yet; the engine runs on this machine's CPU and
   GPU only.
-- **Cost per word** is measured on single turns, not yet interleaved
-  against a baseline.
+- **Cost per word** (11 to 25 s on the live learner) is measured on
+  single turns, not yet interleaved against a baseline.
+- **Acquisition** is at its first dozen turns: the circuit's own word
+  matches the engine's on 0 to 75% of a turn, and whether it leans on the
+  variables rather than the word before is not settled yet (the measures
+  are in every row of `curves.jsonl`).
 
 ## Where the ideas come from
 
