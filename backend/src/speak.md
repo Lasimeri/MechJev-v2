@@ -29,9 +29,12 @@ One turn of conversation, every word a decision of the engine.
      a candidate added, as English (jev-llm's rerank). The `step`
      variables about the reply so far go in the same request and feed the
      next word's inputs.
-   - **The word said** is drawn from the engine's distribution with the
-     user's sampling settings (temp 0.5, top-k 75, top-p 0.95, min-p 0.05,
-     repeat penalty 1.2, in llama.cpp's order), seeded from the clock.
+   - **The word said** is, by the user's choice, the most likely one after
+     their settings (repeat penalty 1.2, top-k 75, top-p 0.95, min-p 0.05,
+     temp 0.5, in llama.cpp's order), the clock seed breaking exact ties
+     (`MJ2_DRAW=sample` draws from the distribution instead: under it, 3 of
+     15 scored words departed from the engine's choice and averaged -0.057
+     reward against +0.074).
    - **The example** is the engine's own choice, with its distribution
      over the shown words.
 4. **Requirements.** Each line of `restrictions.txt` is a Noul about the

@@ -198,6 +198,8 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
         s->min_p = strtod(v, NULL);
     if ((v = getenv("MJ2_REPEAT_PENALTY")) && *v)
         s->repeat_penalty = strtod(v, NULL);
+    if ((v = getenv("MJ2_DRAW")) && *v)
+        s->ties_only = strcmp(v, "sample") != 0; /* sample: drawn from the distribution */
     if ((v = getenv("MJ2_TOP_K")) && *v)
         s->top_k = atoi(v);
     load_checks(&c->cfg);

@@ -135,8 +135,9 @@ variables win:
    - **Choice.** The engine chooses among them as continuations of the
      reply: one Choice, with the `step` variables about the reply so far
      in the same request.
-   - **The word said** is drawn from the engine's distribution with the
-     settings above.
+   - **The word said** is the most likely one after the sampling settings
+     above (the user's choice), the clock seed breaking exact ties;
+     `MJ2_DRAW=sample` draws from the distribution instead.
    - **The example.** The engine's own choice, with its distribution, is
      the example the circuit learns from.
 4. **Score each word.** The engine scores the coherence of the reply after

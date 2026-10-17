@@ -24,6 +24,7 @@
  * engine's own choice, always. */
 typedef struct {
     double temp, top_p, min_p, repeat_penalty;
+    bool ties_only; /* the most likely word, the seed breaking exact ties (the default) */
     int top_k;
 } sampling_t;
 

@@ -28,7 +28,8 @@ void speak_cfg_default(speak_cfg_t *c)
     c->sure_p = 0.25;
     c->train_ms = 3000;
     c->learn = true;
-    c->sampling = (sampling_t){.temp = 0.5, .top_p = 0.95, .min_p = 0.05, .repeat_penalty = 1.2, .top_k = 75};
+    c->sampling = (sampling_t){
+        .temp = 0.5, .top_p = 0.95, .min_p = 0.05, .repeat_penalty = 1.2, .top_k = 75, .ties_only = true};
 }
 
 /* ---- variables ------------------------------------------------------- */
@@ -381,6 +382,20 @@ static size_t sample_index(const double *p, const bool *repeated, size_t n, cons
         while (keep > 1 && q[ix[keep - 1]] < s->min_p * q[ix[0]])
             keep--;
     size_t pick = ix[0];
+    if (s->ties_only) {
+        /* The user's choice (2026-10-17): their settings, the clock seed for
+         * exact ties only. After the penalty the filters and the temperature
+         * keep the order, so the word is the most likely one left; among
+         * options tied exactly at the top, the seed picks. */
+        size_t tied = 1;
+        while (tied < keep && q[ix[tied]] == q[ix[0]])
+            tied++;
+        uint64_t st = seed;
+        pick = ix[tied > 1 ? splitmix64(&st) % tied : 0];
+        free(q);
+        free(ix);
+        return pick;
+    }
     if (s->temp > 0 && keep > 1) {
         double *w = xmalloc(keep * sizeof *w), z = 0;
         double m = log(fmax(q[ix[0]], 1e-300));

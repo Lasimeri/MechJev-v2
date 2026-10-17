@@ -131,6 +131,11 @@ impl Learner {
                 ));
             }
             if self.healthy() {
+                // Reaped when it ends, so it never lingers as a zombie of
+                // this process (seen 2026-10-17 after a learner restart).
+                std::thread::spawn(move || {
+                    let _ = child.wait();
+                });
                 return Ok(());
             }
             std::thread::sleep(Duration::from_millis(200));
