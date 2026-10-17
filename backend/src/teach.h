@@ -20,6 +20,7 @@ typedef struct {
     char *goal;      /* what the engine's line should do */
     char *check;     /* a statement about the learner's reply, judged as a Noul */
     char *held_goal; /* the goal of the line that tests mastery (NULL: the goal) */
+    char *show;      /* words a demonstration may offer besides the learner's and the line's (NULL: none) */
 } lesson_t;
 
 typedef struct {
@@ -41,11 +42,13 @@ int teacher_choose(const teacher_t *t, const speak_cfg_t *cfg, const char *recor
                    size_t errlen);
 
 /* The engine composes a line toward `goal`, a word at a time, from the
- * teacher's words and the words the learner has heard. *line is rendered
+ * teacher's words and the words the learner has heard; `context` (may be
+ * NULL) is what the teacher has said and seen lately, in the engine's state,
+ * so it does not loop on one line (the user's ask). *line is rendered
  * English; *goal_p the Noul that the line does its goal, at the sentence end
  * kept (0 when none was asked); *trace (owned by the caller) holds every
  * step's options. */
-int teacher_compose(const teacher_t *t, const speak_cfg_t *cfg, const learner_t *l, const char *goal,
+int teacher_compose(const teacher_t *t, const speak_cfg_t *cfg, const learner_t *l, const char *goal, const char *context,
                     char **line, double *goal_p, json_t **trace, char *err, size_t errlen);
 
 /* The probability that the lesson's check holds of `reply` to `line`. */

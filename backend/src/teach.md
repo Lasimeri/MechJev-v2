@@ -64,3 +64,29 @@ weather like?", "Would you like to play?", "Thanks for talking!",
 "Goodbye."; weaker: "What you like?", and the two-part name lesson
 ("Tell MechJev to tell name your?"), since split into `name-tell` and
 `name`. A run varies with the clock seeds.
+
+## Context, so it does not loop
+
+The user's ask: "The teaching model needs to have ctx to prevent looping".
+Without it the teacher taught name-tell twice running, greeted with "Hello
+how are you?" each time, and demonstrated "I am." twice to "What name?".
+Now:
+
+- choosing, it reads its last 6 lessons in order with what came of them,
+  and is told a lesson that has not worked the same way twice running can
+  wait;
+- composing, its state holds the last 8 lines it said to the learner, and
+  it is asked to say this one in a new way; the line that tests mastery is
+  composed knowing this lesson's exchanges ("In this lesson you said ...
+  Alone it answered ... You showed it ...");
+- demonstrating, the turn's conversation is this lesson's demonstrations so
+  far, and it may offer the lesson's SHOWN WORDS (lessons.txt), the
+  answer's words, which the line itself may not hold ("What name?" holds no
+  "MechJev").
+
+The learner's tries alone keep an empty conversation (their judging is the
+measure). The name lesson, before and after: demonstrations "What?", "I
+am.", "I am." against "My name is mechjev." twice; the learner alone after
+them "Yes I too.", "Name?" against "Yes, mechjev." (check 0.81) and "My
+name is mechjev?" (0.76); on a line never taught "Yes!" (0.01) against "My
+name is mechjev am." (0.71, the requirements failing on form).

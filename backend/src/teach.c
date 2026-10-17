@@ -49,9 +49,9 @@ int teacher_load(teacher_t *t, const char *lessons_path, const char *words_path,
         char *s = trim(ln);
         if (!*s || *s == '#')
             continue;
-        char *field[4] = {0};
+        char *field[5] = {0};
         int nf = 0;
-        for (char *p = s; nf < 4;) {
+        for (char *p = s; nf < 5;) {
             char *bar = strchr(p, '|');
             if (bar)
                 *bar = 0;
@@ -61,7 +61,7 @@ int teacher_load(teacher_t *t, const char *lessons_path, const char *words_path,
             p = bar + 1;
         }
         if (nf < 3 || !*field[0] || !*field[1] || !*field[2]) {
-            snprintf(err, errlen, "%s: line %d: a lesson is NAME | GOAL | CHECK [| HELD-OUT GOAL]", lessons_path,
+            snprintf(err, errlen, "%s: line %d: a lesson is NAME | GOAL | CHECK [| HELD-OUT GOAL [| SHOWN WORDS]]", lessons_path,
                      line_no);
             free(text);
             teacher_free(t);
@@ -73,6 +73,7 @@ int teacher_load(teacher_t *t, const char *lessons_path, const char *words_path,
         ls->goal = xstrdup(field[1]);
         ls->check = xstrdup(field[2]);
         ls->held_goal = nf > 3 && *field[3] ? xstrdup(field[3]) : NULL;
+        ls->show = nf > 4 && *field[4] ? xstrdup(field[4]) : NULL;
     }
     free(text);
     if (!t->n) {
@@ -107,6 +108,7 @@ void teacher_free(teacher_t *t)
         free(t->lesson[i].goal);
         free(t->lesson[i].check);
         free(t->lesson[i].held_goal);
+        free(t->lesson[i].show);
     }
     free(t->lesson);
     for (size_t i = 0; i < t->nwords; i++)
@@ -131,7 +133,8 @@ int teacher_choose(const teacher_t *t, const speak_cfg_t *cfg, const char *recor
     sb_t ins;
     sb_init(&ins);
     sb_printf(&ins, "%s The lessons, and what the learner has shown in each so far:\n%s\nWhich lesson should "
-                    "you teach next? Choose the one it needs most.",
+                    "you teach next? Choose the one it needs most now; a lesson that has not worked the same "
+                    "way twice running can wait while you teach another.",
               TEACHER, record);
     char **keys = xmalloc(t->n * sizeof *keys);
     for (size_t i = 0; i < t->n; i++)
@@ -189,11 +192,12 @@ static char **vocabulary(const teacher_t *t, const learner_t *l, size_t *n)
  * unfinished (asked "the best way to go on", a line that looked finished
  * won: "Hello how?", "MechJev?", 2026-10-17; the same myopia the learner's
  * own word choice had, speak.md). */
-static char *instructions(const char *goal, char **said, size_t t, bool groups)
+static char *instructions(const char *goal, char **said, size_t t, bool groups, bool vary)
 {
     sb_t b;
     sb_init(&b);
-    sb_printf(&b, "%s What this line of yours should do: %s Use short, simple words. ", TEACHER, goal);
+    sb_printf(&b, "%s What this line of yours should do: %s Use short, simple words.%s ", TEACHER, goal,
+              vary ? " Say it in a new way, not as in your lines so far." : "");
     char *so_far = t ? render_words(said, t) : NULL;
     if (!t)
         sb_puts(&b, "Your line is empty so far. ");
@@ -241,7 +245,7 @@ static int line_does_goal(const speak_cfg_t *cfg, const char *state, const char 
     return 0;
 }
 
-int teacher_compose(const teacher_t *t, const speak_cfg_t *cfg, const learner_t *l, const char *goal,
+int teacher_compose(const teacher_t *t, const speak_cfg_t *cfg, const learner_t *l, const char *goal, const char *context,
                     char **line, double *goal_p, json_t **trace, char *err, size_t errlen)
 {
     size_t nv;
@@ -249,7 +253,12 @@ int teacher_compose(const teacher_t *t, const speak_cfg_t *cfg, const learner_t 
     char *said[LINE_TOKENS + 1];
     size_t n = 0;
     json_t *tr = jarr();
-    const char *state = "A conversation in English between a teacher and a beginner it teaches.";
+    sb_t sst;
+    sb_init(&sst);
+    sb_puts(&sst, "A conversation in English between a teacher and a beginner it teaches.");
+    if (context && *context)
+        sb_printf(&sst, "\n%s", context);
+    char *state = sb_take(&sst);
     int rc = 0;
     size_t *idx = xmalloc((nv + 4) * sizeof *idx);
     /* the keeper, for the teacher: the sentence end where the line did its
@@ -273,7 +282,7 @@ int teacher_compose(const teacher_t *t, const speak_cfg_t *cfg, const learner_t 
             idx[i - 1] = idx[j];
             idx[j] = tmp;
         }
-        char *gi = instructions(goal, said, n, true);
+        char *gi = instructions(goal, said, n, true, context && *context);
         json_t *qs = jobj();
         size_t ng = 0;
         for (size_t at = 0; at < np; at += GROUP, ng++) {
@@ -333,7 +342,7 @@ int teacher_compose(const teacher_t *t, const speak_cfg_t *cfg, const learner_t 
             said[n] = fin[i];
             keys[i] = render_words(said, n + 1);
         }
-        char *fi = instructions(goal, said, n, false);
+        char *fi = instructions(goal, said, n, false, context && *context);
         json_t *q2 = jobj();
         jobj_set(q2, "next", speak_choice_q(fi, keys, nf));
         free(fi);
@@ -408,7 +417,7 @@ int teacher_compose(const teacher_t *t, const speak_cfg_t *cfg, const learner_t 
             said[n] = (char *)ends[m];
             keys[m] = render_words(said, n + 1);
         }
-        char *fi = instructions(goal, said, n, false);
+        char *fi = instructions(goal, said, n, false, context && *context);
         json_t *q = jobj();
         jobj_set(q, "end", speak_choice_q(fi, keys, 3));
         free(fi);
@@ -433,6 +442,7 @@ int teacher_compose(const teacher_t *t, const speak_cfg_t *cfg, const learner_t 
     for (size_t i = 0; i < n; i++)
         free(said[i]);
     free(vocab);
+    free(state);
     if (rc) {
         json_free(tr);
         return -1;

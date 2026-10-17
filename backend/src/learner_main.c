@@ -9,6 +9,7 @@
  *   learner reset --yes        forget everything (removes the store)
  */
 #define _GNU_SOURCE
+#include <ctype.h>
 #include <errno.h>
 #include <math.h>
 #include <poll.h>
@@ -875,7 +876,7 @@ static int cmd_compose(ctx_t *c, int argc, char **argv)
         json_t *trace = NULL;
         double t0 = now_ms();
         double gp = 0;
-        if (teacher_compose(&t, &c->cfg, c->l, ls->goal, &line, &gp, &trace, err, sizeof err)) {
+        if (teacher_compose(&t, &c->cfg, c->l, ls->goal, NULL, &line, &gp, &trace, err, sizeof err)) {
             fprintf(stderr, "error: %s\n", err);
             rc = 1;
             break;
@@ -898,6 +899,72 @@ static int cmd_compose(ctx_t *c, int argc, char **argv)
 
 #define SHOTS 3         /* demonstrations a lesson at most */
 #define COMPOSE_TRIES 2 /* a line under 0.5 on its goal is composed again, once */
+
+/* The teacher's context (the user, 2026-10-17: "The teaching model needs
+ * to have ctx to prevent looping"; without it, it taught name-tell twice
+ * running, greeted with "Hello how are you?" every time and demonstrated
+ * "I am." twice). From lessons.jsonl: *lines, the last RECENT_LINES lines it
+ * said to the learner, newest first, once each; *lessons, its last
+ * RECENT_LESSONS lessons, oldest first, with what came of them. */
+#define RECENT_LINES 8
+#define RECENT_LESSONS 6
+
+static void teacher_recent(const ctx_t *c, char **lines, char **lessons)
+{
+    char *path = join(c->dir, "lessons.jsonl");
+    FILE *f = fopen(path, "r");
+    free(path);
+    json_t *rows = jarr();
+    char *buf = NULL;
+    size_t cap = 0;
+    ssize_t len;
+    while (f && (len = getline(&buf, &cap, f)) > 0) {
+        char perr[64];
+        json_t *r = json_parse(buf, (size_t)len, perr, sizeof perr);
+        if (r)
+            jarr_push(rows, r);
+    }
+    free(buf);
+    if (f)
+        fclose(f);
+    sb_t a, b;
+    sb_init(&a);
+    sb_init(&b);
+    size_t nl = 0;
+    char *seen[2 * RECENT_LINES];
+    for (size_t k = rows->n; k-- > 0 && nl < RECENT_LINES;) {
+        const json_t *r = rows->items[k];
+        const json_t *cand[2] = {jobj_get(jobj_get(r, "held_out"), "line"), jobj_get(r, "line")};
+        for (int j = 0; j < 2 && nl < RECENT_LINES; j++) {
+            if (!cand[j] || cand[j]->t != J_STR)
+                continue;
+            bool again = false;
+            for (size_t s = 0; s < nl && !again; s++)
+                again = !strcasecmp(seen[s], cand[j]->s);
+            if (again)
+                continue;
+            seen[nl++] = cand[j]->s;
+            sb_printf(&a, "%s\"%s\"", nl > 1 ? "; " : "", cand[j]->s);
+        }
+    }
+    size_t from = rows->n > RECENT_LESSONS ? rows->n - RECENT_LESSONS : 0;
+    for (size_t k = from; k < rows->n; k++) {
+        const json_t *r = rows->items[k], *ls = jobj_get(r, "lesson"), *ln = jobj_get(r, "line"),
+                     *ok = jobj_get(r, "passed"), *h = jobj_get(r, "held_out");
+        const json_t *hok = jobj_get(h, "passed");
+        sb_printf(&b, "- %s: ", ls && ls->t == J_STR ? ls->s : "?");
+        if (ln && ln->t == J_STR)
+            sb_printf(&b, "you said \"%s\"; %s after %u demonstrations; ", ln->s,
+                      ok && ok->t == J_BOOL && ok->b ? "it passed" : "it did not pass",
+                      (unsigned)num(r, "shots"));
+        else
+            sb_puts(&b, "measured only; ");
+        sb_printf(&b, "on a line never taught it %s\n", hok && hok->t == J_BOOL && hok->b ? "passed" : "failed");
+    }
+    json_free(rows);
+    *lines = nl ? sb_take(&a) : (sb_free(&a), xstrdup(""));
+    *lessons = b.n ? sb_take(&b) : (sb_free(&b), xstrdup(""));
+}
 
 /* What the teacher reads to choose: a line a lesson, from lessons.jsonl. */
 static char *teacher_record(const ctx_t *c, const teacher_t *t)
@@ -940,6 +1007,12 @@ static char *teacher_record(const ctx_t *c, const teacher_t *t)
     free(held);
     free(held_ok);
     free(last);
+    char *lines = NULL, *recent = NULL;
+    teacher_recent(c, &lines, &recent);
+    if (*recent)
+        sb_printf(&b, "Your last lessons, oldest first:\n%s", recent);
+    free(lines);
+    free(recent);
     return sb_take(&b);
 }
 
@@ -947,7 +1020,24 @@ static char *teacher_record(const ctx_t *c, const teacher_t *t)
  * first is under 0.5 on it), not the same text as `avoid` if it can help it
  * (when every try was that text, the last is kept and *same says so: a
  * duplicate is a weaker test, not a failed lesson). */
-static int compose_best(ctx_t *c, const teacher_t *t, const char *goal, const char *avoid, bool *same, char **line,
+/* Two lines the same but for marks, spaces and case ("Hello, how are you?"
+ * tested a lesson taught as "Hello how are you?"). */
+static bool same_text(const char *a, const char *b)
+{
+    for (;;) {
+        while (*a && !isalnum((unsigned char)*a))
+            a++;
+        while (*b && !isalnum((unsigned char)*b))
+            b++;
+        if (!*a || !*b)
+            return !*a && !*b;
+        if (tolower((unsigned char)*a++) != tolower((unsigned char)*b++))
+            return false;
+    }
+}
+
+static int compose_best(ctx_t *c, const teacher_t *t, const char *goal, const char *context, const char *avoid,
+                        bool *same, char **line,
                         double *gp, char *err, size_t errlen)
 {
     *line = NULL;
@@ -959,7 +1049,7 @@ static int compose_best(ctx_t *c, const teacher_t *t, const char *goal, const ch
         double p = 0;
         json_t *tr = NULL;
         pthread_mutex_lock(&c->mu);
-        int rc = teacher_compose(t, &c->cfg, c->l, goal, &l1, &p, &tr, err, errlen);
+        int rc = teacher_compose(t, &c->cfg, c->l, goal, context, &l1, &p, &tr, err, errlen);
         pthread_mutex_unlock(&c->mu);
         if (rc) {
             free(*line);
@@ -967,7 +1057,7 @@ static int compose_best(ctx_t *c, const teacher_t *t, const char *goal, const ch
             return -1;
         }
         json_free(tr);
-        if (avoid && !strcasecmp(l1, avoid)) {
+        if (avoid && same_text(l1, avoid)) {
             free(dup);
             dup = l1;
             dup_p = p;
@@ -1033,24 +1123,34 @@ static int attempt(ctx_t *c, const lesson_t *ls, const char *line, json_t **out,
 }
 
 /* A demonstration: a taught turn on `line` from an empty conversation (the
- * engine chooses each word among the learner's, the learner learns; the
+ * engine chooses each word among the learner's and the lesson's shown words,
+ * the learner learns; the
  * turn is kept in turns.jsonl like any other). */
-static int demonstrate(ctx_t *c, const char *line, json_t **out, char *err, size_t errlen)
+static int demonstrate(ctx_t *c, const char *line, history_t *lesson_h, const char *show, json_t **out, char *err,
+                       size_t errlen)
 {
-    history_t empty = {0};
     speak_cfg_t cfg = c->cfg;
     cfg.alone = cfg.probe = false;
+    cfg.show = show; /* the answer's words: "What name?" holds no "MechJev" */
     char *reply = NULL;
     json_t *rec = NULL;
     pthread_mutex_lock(&c->mu);
-    int rc = speak_turn(c->l, &cfg, &empty, line, &reply, &rec, err, errlen);
+    if (show && *show) { /* shown is heard: the words enter the learner's lexicon */
+        char **w;
+        size_t n = split_words(show, &w);
+        learner_hear(c->l, w, n);
+        free_words(w, n);
+    }
+    /* lesson_h: this lesson's demonstrations so far, so the engine sees what
+     * it already showed (it showed "I am." twice running, 2026-10-17); the
+     * turn adds itself to it */
+    int rc = speak_turn(c->l, &cfg, lesson_h, line, &reply, &rec, err, errlen);
     char *sp = join(c->dir, "speaking.txt");
     unlink(sp);
     free(sp);
     if (!rc)
         rc = persist(c, rec, err, errlen);
     pthread_mutex_unlock(&c->mu);
-    history_free(&empty);
     if (rc) {
         free(reply);
         json_free(rec);
@@ -1098,30 +1198,52 @@ static int run_lesson(ctx_t *c, const teacher_t *t, int fixed, bool measure, jso
     char *line = NULL;
     double gp = 0;
     int rc = 0;
+    /* the teacher's context: the lines it has said lately (a line to say
+     * anew), and in the test, what happened in this lesson */
+    char *recent_lines = NULL, *recent_lessons = NULL;
+    teacher_recent(c, &recent_lines, &recent_lessons);
+    free(recent_lessons);
+    sb_t said;
+    sb_init(&said);
+    if (*recent_lines)
+        sb_printf(&said, "Lines you have said to the learner lately: %s.", recent_lines);
+    free(recent_lines);
+    sb_t lesson;
+    sb_init(&lesson);
     if (!measure) {
-        if (compose_best(c, t, ls->goal, NULL, NULL, &line, &gp, err, errlen)) {
+        if (compose_best(c, t, ls->goal, said.s, NULL, NULL, &line, &gp, err, errlen)) {
+            sb_free(&said);
+            sb_free(&lesson);
             json_free(r);
             return -1;
         }
         jobj_set(r, "line", jstr(line));
         jobj_set(r, "line_goal", jf64(round(gp * 1e4) / 1e4));
+        sb_printf(&lesson, "In this lesson you said \"%s\".", line);
         json_t *steps = jarr(), *a = NULL;
         bool passed = false;
+        history_t lesson_h = {0}; /* this lesson's demonstrations */
         rc = attempt(c, ls, line, &a, &passed, err, errlen);
-        if (!rc)
+        if (!rc) {
+            sb_printf(&lesson, " Alone it answered \"%s\".", jobj_get(a, "reply")->s);
             jarr_push(steps, a);
+        }
         size_t shots = 0;
         while (!rc && !passed && shots < SHOTS) {
             json_t *d = NULL;
-            rc = demonstrate(c, line, &d, err, errlen);
+            rc = demonstrate(c, line, &lesson_h, ls->show, &d, err, errlen);
             if (rc)
                 break;
             jobj_set(d, "demonstration", ju64(++shots));
+            sb_printf(&lesson, " You showed it \"%s\".", jobj_get(d, "reply")->s);
             jarr_push(steps, d);
             rc = attempt(c, ls, line, &a, &passed, err, errlen);
-            if (!rc)
+            if (!rc) {
+                sb_printf(&lesson, " Alone it answered \"%s\".", jobj_get(a, "reply")->s);
                 jarr_push(steps, a);
+            }
         }
+        history_free(&lesson_h);
         jobj_set(r, "steps", steps);
         jobj_set(r, "shots", ju64(shots));
         jobj_set(r, "passed", jbool(passed));
@@ -1130,7 +1252,12 @@ static int run_lesson(ctx_t *c, const teacher_t *t, int fixed, bool measure, jso
         char *held = NULL;
         double hp = 0;
         bool dup = false;
-        rc = compose_best(c, t, ls->held_goal ? ls->held_goal : ls->goal, line, &dup, &held, &hp, err, errlen);
+        sb_t ctx;
+        sb_init(&ctx);
+        sb_printf(&ctx, "%s%s%s%s", said.s ? said.s : "", said.s && lesson.s ? "\n" : "", lesson.s ? lesson.s : "",
+                  lesson.s ? " Now test it on a new line it has not heard." : "");
+        rc = compose_best(c, t, ls->held_goal ? ls->held_goal : ls->goal, ctx.s, line, &dup, &held, &hp, err, errlen);
+        sb_free(&ctx);
         if (!rc) {
             json_t *a = NULL;
             bool passed = false;
@@ -1145,6 +1272,8 @@ static int run_lesson(ctx_t *c, const teacher_t *t, int fixed, bool measure, jso
             free(held);
         }
     }
+    sb_free(&said);
+    sb_free(&lesson);
     free(line);
     if (rc) {
         json_free(r);

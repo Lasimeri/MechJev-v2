@@ -936,6 +936,8 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     *record = NULL;
     char **heard;
     size_t nh = split_words(person, &heard);
+    char **show_w = NULL;
+    size_t ns_show = cfg->show && *cfg->show ? split_words(cfg->show, &show_w) : 0;
     size_t lex_before = l->n;
     if (!cfg->probe) /* a probe measures, it changes nothing */
         learner_hear(l, heard, nh);
@@ -963,6 +965,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     if (!ans) {
         free(state);
         free_words(heard, nh);
+        free_words(show_w, ns_show);
         return -1;
     }
     json_t *turn_vars = jobj();
@@ -1044,6 +1047,8 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
          * heard only now is offered too: the person has just used it. The
          * engine still decides. */
         size_t heard_from = nc;
+        if (!cfg->alone && ns_show) /* the teacher's answer words, in a demonstration */
+            nc = offer_heard(l, said, t, show_w, ns_show, cands, nc);
         if (!cfg->alone)
             nc = offer_heard(l, said, t, heard, nh, cands, nc);
         json_t *step = jobj();
@@ -1338,6 +1343,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     free(ctxs);
     free(labels);
     free_words(heard, nh);
+    free_words(show_w, ns_show);
     free(coh);
     free(have);
     free(state);
@@ -1350,6 +1356,7 @@ fail:
     free(ctxs);
     free(labels);
     free_words(heard, nh);
+    free_words(show_w, ns_show);
     free(coh);
     free(have);
     free(state);
