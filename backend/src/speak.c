@@ -703,12 +703,32 @@ static int ask_reply_state(const speak_cfg_t *cfg, const char *state, char **sai
     return 0;
 }
 
+/* Whether the reply as it is says all it should: the user's stop rule
+ * (2026-10-17), asked of the engine as a Noul once a sentence has ended.
+ * Before it, the reply stopped when no single next word made it read
+ * better as a whole; one more word is always unfinished, so in block 6 the
+ * reply stopped at 7 of the 11 points where it could, nearly always at the
+ * first sentence. */
+static json_t *complete_q(const char *so_far)
+{
+    sb_t ins;
+    sb_init(&ins);
+    sb_puts(&ins, "The reply so far is ");
+    json_quote(&ins, so_far, strlen(so_far));
+    sb_puts(&ins, ". It says all that a good reply to the person's last message should say.");
+    json_t *q = jobj();
+    jobj_set(q, "type", jstr("noul"));
+    jobj_set(q, "instructions", jstr(ins.s));
+    sb_free(&ins);
+    return q;
+}
+
 /* The coherence lookahead (the user's choice, 2026-10-17): the top
  * `lookahead` words of the rerank, in the order the user's settings give
  * (the repeat penalty applied), each scored by the engine in one request.
- * The word said is the one that makes the best start (viability_q); where a
- * sentence has ended, the reply stops when no word makes it read better as
- * a whole (coherence_q, the completeness score) than the reply as it is.
+ * The word said is the one that makes the best start (viability_q). Where a
+ * sentence has ended, the same request asks whether the reply already says
+ * all it should (complete_q), and the reply stops only if it does.
  * Choosing the word on completeness had favoured whatever finished a reply
  * at once: "I" never once won (0.31-0.39 against "Yes" 0.39-0.75) and the
  * replies collapsed into "Yes." (block 5); the viability wording put "I"
@@ -754,19 +774,20 @@ static int lookahead(learner_t *l, const speak_cfg_t *cfg, const char *state, ch
         char id[24];
         snprintf(id, sizeof id, "v%zu", i);
         jobj_set(qs, id, viability_q(text));
-        if (may_stop) {
-            snprintf(id, sizeof id, "c%zu", i);
-            jobj_set(qs, id, coherence_q(text));
-        }
         free(text);
     }
     free(w2);
+    if (may_stop) {
+        char *as_is = render_words(said, t);
+        jobj_set(qs, "complete", complete_q(as_is));
+        free(as_is);
+    }
     json_t *resp = NULL;
     json_t *ans = ask(cfg, state, qs, &resp, cost, err, errlen);
     if (!ans)
         return -1;
-    json_t *start = jobj(), *whole = may_stop ? jobj() : NULL;
-    double best = -1, best_whole = -1;
+    json_t *start = jobj();
+    double best = -1;
     int32_t pick = -1;
     for (size_t i = 0; i < nc; i++) {
         char id[24];
@@ -777,21 +798,16 @@ static int lookahead(learner_t *l, const speak_cfg_t *cfg, const char *state, ch
             best = v;
             pick = cand[i];
         }
-        if (may_stop) {
-            snprintf(id, sizeof id, "c%zu", i);
-            double c = level_of(jobj_get(ans, id), sizeof COHERENCE / sizeof *COHERENCE);
-            jobj_set(whole, l->v[cand[i]].word, jf64(round(c * 1e4) / 1e4));
-            best_whole = c > best_whole ? c : best_whole;
-        }
     }
-    json_free(resp);
     jobj_set(seen, "start", start);
     if (may_stop) {
-        jobj_set(whole, "(as it is)", jf64(round(st->coh * 1e4) / 1e4));
-        jobj_set(seen, "whole", whole);
-        if (st->coh >= best_whole)
+        const json_t *p = jobj_get(jobj_get(ans, "complete"), "noul");
+        double complete = p && p->t == J_NUM ? p->f : 0;
+        jobj_set(seen, "complete", jf64(round(complete * 1e4) / 1e4));
+        if (complete >= 0.5)
             pick = end;
     }
+    json_free(resp);
     st->pick = pick;
     for (size_t i = 0; i < st->n; i++) /* p: the said word's share of the shown */
         if (st->opt[i] == pick)

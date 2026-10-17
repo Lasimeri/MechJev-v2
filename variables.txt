@@ -23,3 +23,9 @@ step noul The reply so far already answers the person's last message.
 step noul The reply so far is about the one replying.
 step noul The reply so far is about the person.
 step noul The reply so far is a question.
+# 2026-10-17: "answer a question" covered 51 of 82 taught turns, yes-or-no
+# and "what" questions alike, and the variables predicted the first word
+# worse than always guessing "Yes" (0.390 against 0.500; learner.md).
+turn noul The person's last message asks a yes or no question.
+turn noul The person's last message asks what, who, where, when, why or how.
+turn choice What act should a good reply begin with? | confirm or agree | deny | speak of itself | greet | thank | take leave | ask back

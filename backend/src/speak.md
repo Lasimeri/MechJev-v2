@@ -39,13 +39,17 @@ One turn of conversation, every word a decision of the engine.
      the order the user's settings give, are scored by the engine in one
      padded request. The word said is the one that makes the best *start*
      (the viability question: "It is unfinished: more words will follow. How
-     good a start is it...", with levels an unfinished reply can top). After
-     a sentence ends, the reply stops if no word makes it read better *as a
-     whole* (the coherence question, the completeness score RED also uses)
-     than the reply as it is. That choice is also what the circuit learns.
-     `MJ2_LOOKAHEAD=0` restores the rule below. The trace keeps the rerank's
-     own top (`rerank_top`) and both sets of scores (`lookahead.start`,
-     `lookahead.whole`).
+     good a start is it...", with levels an unfinished reply can top).
+     After a sentence ends, the same request asks a Noul about the reply as
+     it is, "It says all that a good reply to the person's last message
+     should say.", and the reply stops only if it holds (P >= 0.5: the
+     user's stop rule, 2026-10-17). Before it, the reply stopped when no
+     single next word made it read better as a whole; one more word is
+     always unfinished, so in block 6 it stopped at 7 of the 11 points where
+     it could, nearly always at the first sentence. That choice is also
+     what the circuit learns. `MJ2_LOOKAHEAD=0` restores the rule below.
+     The trace keeps the rerank's own top (`rerank_top`), the viability
+     scores (`lookahead.start`) and the Noul (`lookahead.complete`).
 
      Why two questions: the completeness levels only let a finished reply
      reach the top, so choosing the word on them favoured whatever finished

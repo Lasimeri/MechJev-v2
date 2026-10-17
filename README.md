@@ -146,7 +146,8 @@ variables win:
    - **The word said** (the coherence lookahead, the user's choice): the
      engine's 3 best after the sampling settings above are scored for how
      good a start each makes, and the best is said. After a sentence ends,
-     the reply stops when no word makes it read better as a whole.
+     the engine is asked whether the reply says all a good reply should;
+     it stops only if so (the user's stop rule).
    - **The example.** That decision, with the engine's distribution, is
      the example the circuit learns from.
 4. **Score each word.** The engine scores the coherence of the reply after
