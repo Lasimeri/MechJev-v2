@@ -130,8 +130,11 @@ variables win:
    - **Inputs.** The variables' probabilities are drawn into bits with a
      seed from the realtime clock, so every token has its own seed, kept in
      the trace.
-   - **Proposal.** The circuit proposes its 8 best words. When it is
-     unsure, the engine adds words from the lexicon.
+   - **Proposal.** While everything the learner can say fits in one Choice
+     (24 words), the engine is shown all of it, ranked by the circuit.
+     Past that, the circuit proposes its 8 best and the engine adds its 10
+     best from the whole vocabulary. The options are shuffled with a clock
+     seed, so the engine never sees the circuit's ranking.
    - **Choice.** The engine chooses among them as continuations of the
      reply: one Choice, with the `step` variables about the reply so far
      in the same request.
@@ -151,7 +154,11 @@ variables win:
 6. **Learn.** The circuit is measured on the turn's words before learning
    them: with every input, with the variables blanked, and with the word
    before blanked. If blanking the variables cost nothing, the circuit
-   would be a chain over words. Then it learns and rehearses.
+   would be a chain over words. Then it learns and rehearses: the KL to
+   the engine's choices, the engine's choice against the whole vocabulary
+   (replies that passed), and each word's per-token reward against the
+   mean at its position. Half the training passes blank the word before
+   (input dropout), so the circuit cannot lean on it alone.
 
 The details are in the sibling `.md` of each source file in `backend/src/`.
 
