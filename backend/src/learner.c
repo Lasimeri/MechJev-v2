@@ -295,12 +295,35 @@ static void emb_adam(learner_t *l, lex_t *x, const float *g)
     }
 }
 
+/* Position buckets for the reward baseline: the first word, the second,
+ * the third and fourth, the rest. */
+#define POS_BUCKETS 4
+static int pos_bucket(unsigned pos) { return pos == 0 ? 0 : pos == 1 ? 1 : pos <= 3 ? 2 : 3; }
+
+/* The baseline: the mean reward of the words said in the replay buffer, by
+ * position bucket (0 where there are none). */
+static void reward_base(const learner_t *l, float *base)
+{
+    double sum[POS_BUCKETS] = {0};
+    size_t n[POS_BUCKETS] = {0};
+    for (size_t i = 0; i < l->nreplay; i++) {
+        const example_t *e = &l->replay[i];
+        if (e->said < 0)
+            continue;
+        int b = pos_bucket(e->pos);
+        sum[b] += e->reward;
+        n[b]++;
+    }
+    for (int b = 0; b < POS_BUCKETS; b++)
+        base[b] = n[b] ? (float)(sum[b] / (double)n[b]) : 0.0f;
+}
+
 /* One example, one gradient step. The loss: KL from the engine's
  * distribution over the shown words to the circuit's over the same words,
  * plus CE_WEIGHT x the engine's choice against every speakable word (replies
  * that passed), plus RL_WEIGHT x the per-token reward on the word said (RED). */
-static void train_one(learner_t *l, const example_t *ex, uint64_t seed, trace_t *t, float **gw,
-                      float *gs, float *ge)
+static void train_one(learner_t *l, const example_t *ex, uint64_t seed, const float *base, trace_t *t,
+                      float **gw, float *gs, float *ge)
 {
     uint8_t bits[N_IN];
     /* The word before blanked for PREV_DROPOUT of the passes (input dropout,
@@ -355,7 +378,12 @@ static void train_one(learner_t *l, const example_t *ex, uint64_t seed, trace_t 
      * the reply after the word minus before it). The loss -r log p(said) over
      * the words shown: a word that made the reply more coherent is
      * pushed up, one that broke it pushed down. */
-    if (ex->said >= 0 && ex->reward != 0.0f) {
+    /* Against a baseline (REINFORCE with one; RED is used with PPO or RLOO,
+     * which have theirs): the mean reward of words said at this position.
+     * Raw, every first word earned about +0.3 for beating the empty reply
+     * and the engine's favourite ("yes") was reinforced turn after turn. */
+    float adv = ex->reward - base[pos_bucket(ex->pos)];
+    if (ex->said >= 0 && adv != 0.0f) {
         /* over the words shown, the alternatives the engine weighed: a
          * negative reward moves probability to them, never to words nobody
          * offered (over the whole lexicon it raised punctuation never shown:
@@ -372,7 +400,7 @@ static void train_one(learner_t *l, const example_t *ex, uint64_t seed, trace_t 
             for (int k = 0; k < ex->n; k++)
                 zr += expf(s_r[k] - mr);
             for (int k = 0; k < ex->n; k++)
-                gs[ex->opt[k]] += RL_WEIGHT * ex->reward * (expf(s_r[k] - mr) / zr - (k == said_at));
+                gs[ex->opt[k]] += RL_WEIGHT * adv * (expf(s_r[k] - mr) / zr - (k == said_at));
         }
     }
     /* back through the scores: to the output bits and (straight through the
@@ -420,19 +448,21 @@ size_t learner_learn(learner_t *l, const example_t *ex, size_t n, double budget_
     float *gs = xmalloc((l->n ? l->n : 1) * sizeof *gs), ge[OUT_BITS];
     for (size_t i = 0; i < n; i++)
         replay_push(l, &ex[i]);
+    float base[POS_BUCKETS];
+    reward_base(l, base);
     size_t passes = 0;
     /* the new examples once, in order: the last n of the buffer (a failed
      * reply's examples teach only the engine's preference among the shown
      * words: train_one) */
     for (size_t i = l->nreplay - (n < l->nreplay ? n : l->nreplay); i < l->nreplay; i++) {
-        train_one(l, &l->replay[i], l->replay[i].id * 0x9E3779B97F4A7C15ull, &t, gw, gs, ge);
+        train_one(l, &l->replay[i], l->replay[i].id * 0x9E3779B97F4A7C15ull, base, &t, gw, gs, ge);
         passes++;
     }
     /* then rehearsal over everything kept, until the budget is spent */
     uint64_t s = l->seed ^ l->trained;
     while (l->nreplay && now_ms() - t0 < budget_ms && (!max_passes || passes < max_passes)) {
         const example_t *e = &l->replay[splitmix64(&s) % l->nreplay];
-        train_one(l, e, e->id * 0x9E3779B97F4A7C15ull + splitmix64(&s), &t, gw, gs, ge);
+        train_one(l, e, e->id * 0x9E3779B97F4A7C15ull + splitmix64(&s), base, &t, gw, gs, ge);
         passes++;
     }
     l->trained += passes;

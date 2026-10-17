@@ -121,3 +121,15 @@ With the dropout, `learner_test` (8 seeds):
 - with the variable blanked 0.544 (0.553);
 - with the word before blanked 0.919 (0.881);
 - per-token reward A/B 0.172 against 0.803 (0.200 against 0.887).
+
+## A baseline for the per-token reward
+
+The RED term trains on the reward minus a baseline: the mean reward of the
+words said in the replay buffer, by position (the first word, the second,
+the third and fourth, the rest). RED's paper uses PPO or RLOO, which have
+baselines of their own; this is REINFORCE with one. Raw, every first word
+earned about +0.3 for beating the empty reply (whose coherence is about
+0.25). The word the engine already favoured, "yes", was reinforced turn
+after turn, and the learner answered "Yes." to three different statements
+(2026-10-17, block 1). The baseline is computed from the replay at
+learning time, so the store does not change.
