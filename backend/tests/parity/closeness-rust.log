@@ -1,0 +1,73 @@
+cargo build --release
+    Finished `release` profile [optimized] target(s) in 0.04s
+target/release/mjev evidence
+target/evidence-cases.jsonl
+target/evidence-jev-rows.jsonl
+XKS_LAYOUT=letters XKS_PERMUTATIONS=3 target/release/mjev eval target/evidence-cases.jsonl --rows target/closeness-rows.jsonl
+mjev: starting Intel Phi Jev on 127.0.0.1:8090 (loads the model; a minute or so)
+xks: server pid 2637176 starting, log /run/user/1000/xks/serve.log
+xks: site cuda
+xks: devices: CUDA0, CPU
+xks: loading Qwen3.8-35B-A3B-Q4_K_M.gguf (21.7 GB)
+xks: GPU layers: 21 of 41 (50%)
+xks listening on http://127.0.0.1:8090  (subject artichoke/Qwen3.8-35B-A3B-Q4_K_M); stops itself after 30 min without a question (kill date)
+http://127.0.0.1:8090/v1/systemone
+{
+  "questions": 28,
+  "failed_cases": 0,
+  "accuracy": 0.9642857142857143,
+  "brier": 0.14871529591907115,
+  "ece": 0.18668016846073027,
+  "mean_confidence": 0.65008314454151,
+  "coverage_at_5pct_error": 1.0,
+  "latency_p50_ms": 2055.2144884,
+  "latency_p95_ms": 2573.818088,
+  "accuracy_by_kind": {
+    "choice": 1.0,
+    "noul": 1.0,
+    "score": 0.8571428571428571
+  },
+  "model": "jev-latest",
+  "cases": 15,
+  "wall_s": 55.02
+}
+target/release/mjev stop
+xks: server 2637176 stopped
+target/release/mjev corroborate target/evidence-jev-rows.jsonl target/closeness-rows.jsonl --temperature
+{
+  "matched": 28,
+  "only_in_a": 0,
+  "only_in_b": 0,
+  "same_answer": 27,
+  "max_prob_diff": 0.34450000000000003,
+  "mean_prob_diff": 0.11805357142857142,
+  "accuracy_a": 1.0,
+  "accuracy_b": 0.9642857142857143,
+  "pairs": [],
+  "temperature": [
+    {
+      "kind": "choice",
+      "questions": 10,
+      "temperature": 0.68,
+      "at_floor": false,
+      "mean_prob_diff_before": 0.11040522651325228,
+      "mean_prob_diff_after": 0.09687562462081183
+    },
+    {
+      "kind": "noul",
+      "questions": 11,
+      "temperature": 0.74,
+      "at_floor": false,
+      "mean_prob_diff_before": 0.06669090909090909,
+      "mean_prob_diff_after": 0.055478663888481945
+    },
+    {
+      "kind": "score",
+      "questions": 7,
+      "temperature": 0.19,
+      "at_floor": false,
+      "mean_prob_diff_before": 0.20970613391363277,
+      "mean_prob_diff_after": 0.12328982508044296
+    }
+  ]
+}
