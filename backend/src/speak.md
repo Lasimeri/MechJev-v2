@@ -36,20 +36,38 @@ One turn of conversation, every word a decision of the engine.
      variables about the reply so far go in the same request and feed the
      next word's inputs.
    - **The coherence lookahead** (the user's choice): the rerank's top 3, in
-     the order the user's settings give, are each scored by the engine for
-     the coherence of the reply with them, in one padded request. The word
-     said is the one that reads best; after a sentence ends, the reply stops
-     if none reads better than the reply as it is. That choice is also what
-     the circuit learns. Before this, block 4 collapsed into "Yes. Too.", the
-     rerank's top said even where the per-token score marked "too" harmful.
-     `MJ2_LOOKAHEAD=0` restores the rule below.
+     the order the user's settings give, are scored by the engine in one
+     padded request. The word said is the one that makes the best *start*
+     (the viability question: "It is unfinished: more words will follow. How
+     good a start is it...", with levels an unfinished reply can top). After
+     a sentence ends, the reply stops if no word makes it read better *as a
+     whole* (the coherence question, the completeness score RED also uses)
+     than the reply as it is. That choice is also what the circuit learns.
+     `MJ2_LOOKAHEAD=0` restores the rule below. The trace keeps the rerank's
+     own top (`rerank_top`) and both sets of scores (`lookahead.start`,
+     `lookahead.whole`).
+
+     Why two questions: the completeness levels only let a finished reply
+     reach the top, so choosing the word on them favoured whatever finished
+     the reply at once. In block 5 the lookahead overrode the rerank in 29 of
+     56 steps; "I" was the rerank's first word 5 times and never kept (0.31 to
+     0.39 against "Yes" 0.39 to 0.75). The 13 recorded first-word sets, both
+     wordings, the same state (`~/.cache/mechjev-v2-viab-ab.jsonl`):
+
+     | | completeness | viability |
+     | --- | --- | --- |
+     | "I" first where the rerank wanted it (5 turns) | 1 | 4 |
+     | "Yes" kept on yes/no questions (5 turns) | 5 | 5 |
+     | "Yes" first, of 13 | 7 | 5 (all yes/no questions) |
+     | mean score of "I" | 0.458 | 0.643 |
    - **(without the lookahead)** the word said is, by the user's choice, the most likely one after
      their settings (repeat penalty 1.2, top-k 75, top-p 0.95, min-p 0.05,
      temp 0.5, in llama.cpp's order), the clock seed breaking exact ties
      (`MJ2_DRAW=sample` draws from the distribution instead: under it, 3 of
      15 scored words departed from the engine's choice and averaged -0.057
      reward against +0.074).
-   - **The example** is the engine's own choice, with its distribution
+   - **The example** is the word said (the lookahead's choice, or without it
+     the engine's own), with the rerank's distribution
      over the shown words.
    - **Every request** asks the engine for `pad_equal` (engine.md): a word's
      whole step is one forward pass, 2.0 s instead of 6 to 10.

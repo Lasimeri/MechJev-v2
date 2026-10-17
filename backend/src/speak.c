@@ -454,11 +454,45 @@ static json_t *coherence_q(const char *so_far)
     return q;
 }
 
+static double level_of(const json_t *answer, size_t levels);
+
 static double coherence_of(const json_t *ans)
 {
-    const json_t *s = jobj_get(jobj_get(ans, "coherence"), "score");
-    double levels = (double)(sizeof COHERENCE / sizeof *COHERENCE) - 1;
-    return s && s->t == J_NUM ? s->f / levels : 0;
+    return level_of(jobj_get(ans, "coherence"), sizeof COHERENCE / sizeof *COHERENCE);
+}
+
+/* The viability of an unfinished reply: how good a start it is. Only a
+ * finished reply can reach the top of COHERENCE, so a one-word reply that
+ * is already complete ("Yes.") beat every good opening ("I") there; these
+ * levels let an unfinished start reach the top. */
+static const char *VIABILITY[] = {"no sense, or no fitting reply can follow",
+                                  "a poor start: a fitting reply is unlikely from here", "a fitting reply could follow",
+                                  "a good start toward a fitting reply", "the best kind of start for a fitting reply"};
+
+static json_t *viability_q(const char *so_far)
+{
+    sb_t ins;
+    sb_init(&ins);
+    sb_puts(&ins, "The reply so far is ");
+    json_quote(&ins, so_far, strlen(so_far));
+    sb_puts(&ins, ". It is unfinished: more words will follow. How good a start is it for a clear, correct "
+                  "English reply that answers what the person said last?");
+    json_t *q = jobj();
+    jobj_set(q, "type", jstr("score"));
+    jobj_set(q, "instructions", jstr(ins.s));
+    sb_free(&ins);
+    json_t *lv = jarr();
+    for (size_t i = 0; i < sizeof VIABILITY / sizeof *VIABILITY; i++)
+        jarr_push(lv, jstr(VIABILITY[i]));
+    jobj_set(q, "criteria", lv);
+    return q;
+}
+
+/* A score answer as a fraction of its levels: 0 the lowest, 1 the highest. */
+static double level_of(const json_t *answer, size_t levels)
+{
+    const json_t *s = jobj_get(answer, "score");
+    return s && s->t == J_NUM && levels > 1 ? s->f / (double)(levels - 1) : 0;
 }
 
 /* ---- one word -------------------------------------------------------- */
@@ -652,12 +686,16 @@ static int ask_reply_state(const speak_cfg_t *cfg, const char *state, char **sai
 
 /* The coherence lookahead (the user's choice, 2026-10-17): the top
  * `lookahead` words of the rerank, in the order the user's settings give
- * (the repeat penalty applied), each scored by the engine for the coherence
- * of the reply with it, in one request; the word said is the one that reads
- * best, and where a sentence has ended the reply stops when none reads
- * better than the reply as it is. Before this the rerank's top was said even
- * when the per-token score marked it harmful, and replies collapsed into
- * "Yes. Too." The rerank's own top and every score go into the trace. */
+ * (the repeat penalty applied), each scored by the engine in one request.
+ * The word said is the one that makes the best start (viability_q); where a
+ * sentence has ended, the reply stops when no word makes it read better as
+ * a whole (coherence_q, the completeness score) than the reply as it is.
+ * Choosing the word on completeness had favoured whatever finished a reply
+ * at once: "I" never once won (0.31-0.39 against "Yes" 0.39-0.75) and the
+ * replies collapsed into "Yes." (block 5); the viability wording put "I"
+ * first in 4 of the 5 turns where the rerank wanted it and kept "Yes" on
+ * every yes/no question (the A/B in speak.md). The rerank's own top and
+ * every score go into the trace. */
 static int lookahead(learner_t *l, const speak_cfg_t *cfg, const char *state, char **said, size_t t,
                      step_t *st, json_t *seen, cost_t *cost, char *err, size_t errlen)
 {
@@ -685,6 +723,8 @@ static int lookahead(learner_t *l, const speak_cfg_t *cfg, const char *state, ch
             cand[nc++] = st->opt[idx[i]];
     if (!nc)
         return 0;
+    int32_t end = lex_find(l, END);
+    bool may_stop = end >= 0 && t > 0 && sentence_end(said[t - 1]);
     json_t *qs = jobj();
     char **w2 = xmalloc((t + 1) * sizeof *w2);
     for (size_t j = 0; j < t; j++)
@@ -692,38 +732,45 @@ static int lookahead(learner_t *l, const speak_cfg_t *cfg, const char *state, ch
     for (size_t i = 0; i < nc; i++) {
         w2[t] = l->v[cand[i]].word;
         char *text = render_words(w2, t + 1);
-        json_t *q = coherence_q(text);
-        free(text);
         char id[24];
-        snprintf(id, sizeof id, "c%zu", i);
-        /* coherence_q names its question "coherence" inside; the id is ours */
-        jobj_set(qs, id, q);
+        snprintf(id, sizeof id, "v%zu", i);
+        jobj_set(qs, id, viability_q(text));
+        if (may_stop) {
+            snprintf(id, sizeof id, "c%zu", i);
+            jobj_set(qs, id, coherence_q(text));
+        }
+        free(text);
     }
     free(w2);
     json_t *resp = NULL;
     json_t *ans = ask(cfg, state, qs, &resp, cost, err, errlen);
     if (!ans)
         return -1;
-    double best = -1;
+    json_t *start = jobj(), *whole = may_stop ? jobj() : NULL;
+    double best = -1, best_whole = -1;
     int32_t pick = -1;
     for (size_t i = 0; i < nc; i++) {
         char id[24];
-        snprintf(id, sizeof id, "c%zu", i);
-        const json_t *s = jobj_get(jobj_get(ans, id), "score");
-        double levels = (double)(sizeof COHERENCE / sizeof *COHERENCE) - 1;
-        double c = s && s->t == J_NUM ? s->f / levels : 0;
-        jobj_set(seen, l->v[cand[i]].word, jf64(round(c * 1e4) / 1e4));
-        if (c > best) {
-            best = c;
+        snprintf(id, sizeof id, "v%zu", i);
+        double v = level_of(jobj_get(ans, id), sizeof VIABILITY / sizeof *VIABILITY);
+        jobj_set(start, l->v[cand[i]].word, jf64(round(v * 1e4) / 1e4));
+        if (v > best) {
+            best = v;
             pick = cand[i];
+        }
+        if (may_stop) {
+            snprintf(id, sizeof id, "c%zu", i);
+            double c = level_of(jobj_get(ans, id), sizeof COHERENCE / sizeof *COHERENCE);
+            jobj_set(whole, l->v[cand[i]].word, jf64(round(c * 1e4) / 1e4));
+            best_whole = c > best_whole ? c : best_whole;
         }
     }
     json_free(resp);
-    int32_t end = lex_find(l, END);
-    bool may_stop = end >= 0 && t > 0 && sentence_end(said[t - 1]);
+    jobj_set(seen, "start", start);
     if (may_stop) {
-        jobj_set(seen, "(stop)", jf64(round(st->coh * 1e4) / 1e4));
-        if (st->coh >= best)
+        jobj_set(whole, "(as it is)", jf64(round(st->coh * 1e4) / 1e4));
+        jobj_set(seen, "whole", whole);
+        if (st->coh >= best_whole)
             pick = end;
     }
     st->pick = pick;
