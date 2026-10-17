@@ -142,3 +142,18 @@ not said). 0.05 lets the dips this block called noise go on (0.017, 0.037)
 and cuts the falls (0.051, 0.117, 0.18). The record's `kept` holds the cut
 (`cut_at`, `coherence_best`, `coherence_cut`); the step where it fell is
 marked `keeper` in the trace.
+
+Block 8 (block 5's ten messages again, the keeper on), against block 7
+(the stop rule without it):
+
+| | block 7 | block 8 |
+| --- | --- | --- |
+| taught replies passing every requirement | 6/10 | 9/10 |
+| mean final coherence | 0.585 | 0.725 |
+| the probe, the circuit alone | 4/12 | 9/12 |
+| how replies ended | | said all 4 (P 0.51 to 0.55), cut by the keeper 2, the length cap 4 |
+
+Block 7's run-ons taught the circuit to run on (its probe answers: "I am
+too am happy.", "I did? Do?"); the keeper teaches the end at the best
+sentence instead. Not interleaved, and block 8 was the fourth pass over
+these messages (block 7, the third, got worse, not better).
