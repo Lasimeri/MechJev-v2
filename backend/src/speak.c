@@ -802,7 +802,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     /* The cap counts words; punctuation and the stop come free (a word or
      * two is "Yes, I am." not "Yes, I": measured 2026-10-17, the cap cut the
      * circuit alone off mid-reply). Room for a mark after every word. */
-    size_t room = 2 * cap + 2, words = 0;
+    size_t room = 2 * (cap + 4) + 2, words = 0;
     char **said = xcalloc(room + 1, sizeof *said);
     example_t *ex = xcalloc(room + 1, sizeof *ex);
     double *coh = xcalloc(room + 2, sizeof *coh); /* coh[k]: the coherence of the first k words */
@@ -811,7 +811,9 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     json_t *trace = jarr();
     bool ended = false;
     int32_t prev = lex_find(l, START);
-    while (words < cap && t < room) {
+    /* Past the cap a reply only finishes its sentence, 4 words at most (a
+     * cap of 3 cut "Hello! I am" off mid-sentence, 2026-10-17). */
+    while (t < room && (words < cap || (t > 0 && !sentence_end(said[t - 1]) && words < cap + 4))) {
         double ts = now_ms();
         uint64_t seed = clock_seed();
         uint8_t bits[N_IN];

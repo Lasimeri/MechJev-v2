@@ -387,47 +387,55 @@ static int run_probes(ctx_t *c, json_t **out, char *err, size_t errlen)
     char stamp[32];
     strftime(stamp, sizeof stamp, "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
     char *sv = NULL;
+    /* Each question several times: the variable bits are drawn with a new
+     * clock seed every time, and one answer a question could not tell
+     * learning from luck (2026-10-17: 3 of 4 passed after 49 turns, 1 of 4
+     * after 59, one sample each). */
+    long repeats = conf_long("MJ2_PROBE_REPEATS", 3);
     for (char *q = strtok_r(text, "\n", &sv); q && !rc; q = strtok_r(NULL, "\n", &sv)) {
         while (*q == ' ' || *q == '\t')
             q++;
         if (!*q || *q == '#')
             continue;
-        history_t empty = {0};
-        speak_cfg_t cfg = c->cfg;
-        cfg.alone = cfg.probe = true;
-        char *reply = NULL;
-        json_t *rec = NULL;
-        pthread_mutex_lock(&c->mu);
-        rc = speak_turn(c->l, &cfg, &empty, q, &reply, &rec, err, errlen);
-        size_t turns = c->l->turns, lexicon = c->l->n, say = lex_speakable_count(c->l);
-        pthread_mutex_unlock(&c->mu);
-        char *sp = join(c->dir, "speaking.txt");
-        unlink(sp);
-        free(sp);
-        history_free(&empty);
-        if (rc)
-            break;
-        json_t *row = jobj();
-        jobj_set(row, "time", jstr(stamp));
-        jobj_set(row, "turns", ju64(turns));
-        jobj_set(row, "lexicon", ju64(lexicon));
-        jobj_set(row, "speakable", ju64(say));
-        jobj_set(row, "probe", jstr(q));
-        jobj_set(row, "reply", jstr(reply));
-        jobj_set(row, "words", jclone(jobj_get(rec, "words")));
-        jobj_set(row, "coherence", jclone(jobj_get(rec, "coherence_final")));
-        jobj_set(row, "failed_requirement", jclone(jobj_get(rec, "failed_requirement")));
-        jobj_set(row, "checks", jclone(jobj_get(rec, "checks")));
-        char *line = json_dump(row);
-        FILE *f = fopen(file, "a");
-        if (f) {
-            fprintf(f, "%s\n", line);
-            fclose(f);
+        for (long rep = 0; rep < repeats && !rc; rep++) {
+            history_t empty = {0};
+            speak_cfg_t cfg = c->cfg;
+            cfg.alone = cfg.probe = true;
+            char *reply = NULL;
+            json_t *rec = NULL;
+            pthread_mutex_lock(&c->mu);
+            rc = speak_turn(c->l, &cfg, &empty, q, &reply, &rec, err, errlen);
+            size_t turns = c->l->turns, lexicon = c->l->n, say = lex_speakable_count(c->l);
+            pthread_mutex_unlock(&c->mu);
+            char *sp = join(c->dir, "speaking.txt");
+            unlink(sp);
+            free(sp);
+            history_free(&empty);
+            if (rc)
+                break;
+            json_t *row = jobj();
+            jobj_set(row, "time", jstr(stamp));
+            jobj_set(row, "turns", ju64(turns));
+            jobj_set(row, "lexicon", ju64(lexicon));
+            jobj_set(row, "speakable", ju64(say));
+            jobj_set(row, "probe", jstr(q));
+            jobj_set(row, "repeat", ju64((uint64_t)rep));
+            jobj_set(row, "reply", jstr(reply));
+            jobj_set(row, "words", jclone(jobj_get(rec, "words")));
+            jobj_set(row, "coherence", jclone(jobj_get(rec, "coherence_final")));
+            jobj_set(row, "failed_requirement", jclone(jobj_get(rec, "failed_requirement")));
+            jobj_set(row, "checks", jclone(jobj_get(rec, "checks")));
+            char *line = json_dump(row);
+            FILE *f = fopen(file, "a");
+            if (f) {
+                fprintf(f, "%s\n", line);
+                fclose(f);
+            }
+            free(line);
+            jarr_push(rows, row);
+            free(reply);
+            json_free(rec);
         }
-        free(line);
-        jarr_push(rows, row);
-        free(reply);
-        json_free(rec);
     }
     free(text);
     free(file);

@@ -199,11 +199,19 @@ Every number comes with the command or file that produced it.
 from an empty conversation. The learner hears, learns and counts nothing,
 so a probe changes nothing it measures. The rows go to `probes.jsonl`.
 
+Each question is asked 3 times (the variable bits are drawn with a new clock
+seed each time): passed of 3, mean coherence, and what the circuit alone
+said.
+
 | after | Hello! Are you happy today? | Do you like music? | What is your name? | Thank you for talking with me. |
 | --- | --- | --- | --- | --- |
-| 49 turns | Yes. I am (0.76, passed) | Yes. (0.83, passed) | Hello. I do (0.49, failed) | Yes. (0.73, passed) |
+| 59 turns | 3/3, 0.79: "Yes. I am.", "Yes. I am.", "I am happy too." | 2/3, 0.68: "Hello. I do.", "Yes. I do music.", "Yes." | 0/3, 0.30 (no name was ever taught) | 3/3, 0.73: "Yes.", "Thank you.", "Hello." |
 
-(coherence, requirements). Before the probe instrument, the same questions
+Two earlier single-sample probes (49 and 59 turns, 3 and 1 of 4 passed)
+fall inside this spread, which is why each question is now asked three
+times.
+
+Before the probe instrument, the same questions
 put through the conversation (heard and counted) got word salad from the
 circuit alone ("Yes? Too music? Do, asking! Today. I too. Too."). It has
 since learned to stop after a sentence. It still says "Yes." where "Yes."

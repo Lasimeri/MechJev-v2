@@ -1059,12 +1059,11 @@ fn talk(f: &mut Frame, a: &mut App) {
         if !a.talk.probes.is_empty() {
             let t = a.talk.probes[0]["turns"].as_u64().unwrap_or(0);
             sidep.push(rule(0, &format!("alone, after {t} turns"), side - 1, true));
-            for r in &a.talk.probes {
-                let q = r["probe"].as_str().unwrap_or("");
-                let reply = r["reply"].as_str().filter(|s| !s.is_empty()).unwrap_or("(no words)");
-                let mark = if r["failed_requirement"].as_bool() == Some(true) { "✗" } else { "✓" };
-                sidep.push(vec![faint(clip(q, side.saturating_sub(2)))]);
-                sidep.push(vec![dim(format!(" {mark} ")), text(clip(reply, side.saturating_sub(5)))]);
+            for g in super::talk::probe_groups(&a.talk.probes) {
+                sidep.push(vec![faint(clip(&g.question, side.saturating_sub(2)))]);
+                let head = format!(" {}/{} ", g.passed, g.replies.len());
+                let first = g.replies.first().cloned().unwrap_or_default();
+                sidep.push(vec![dim(head.clone()), text(clip(&first, side.saturating_sub(chars(&head) + 1)))]);
             }
             sidep.push(vec![]);
         }

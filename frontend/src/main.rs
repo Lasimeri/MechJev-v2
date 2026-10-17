@@ -103,13 +103,16 @@ fn probe() -> Result<(), String> {
     }
     let l = Learner::new();
     l.ensure()?;
-    for r in l.probe()?.as_array().map(Vec::as_slice).unwrap_or_default() {
-        let reply = r["reply"].as_str().unwrap_or("");
-        println!("{}\n  alone: {}", r["probe"].as_str().unwrap_or(""), if reply.is_empty() { "(no words)" } else { reply });
-        if let Some(c) = r["coherence"].as_f64() {
-            let req = if r["failed_requirement"].as_bool() == Some(true) { "failed" } else { "passed" };
-            eprintln!("  coherence {c:.2}, requirements {req}");
-        }
+    let rows = l.probe()?;
+    for g in mjev2::tui::talk::probe_groups(rows.as_array().map(Vec::as_slice).unwrap_or_default()) {
+        println!("{}", g.question);
+        println!(
+            "  passed {} of {}, coherence {:.2}; the circuit alone said: {}",
+            g.passed,
+            g.replies.len(),
+            g.coherence,
+            g.replies.join(" | ")
+        );
     }
     Ok(())
 }

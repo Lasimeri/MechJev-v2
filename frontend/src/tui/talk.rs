@@ -117,3 +117,36 @@ pub fn scored_words(turn: &Value) -> String {
     }
     out.join("  ")
 }
+
+/// One probe question's repeats: how many passed every requirement, the mean
+/// coherence, and the answers.
+pub struct ProbeGroup {
+    pub question: String,
+    pub passed: usize,
+    pub coherence: f64,
+    pub replies: Vec<String>,
+}
+
+/// Probe rows grouped by question, in the order asked.
+pub fn probe_groups(rows: &[Value]) -> Vec<ProbeGroup> {
+    let mut out: Vec<ProbeGroup> = Vec::new();
+    for r in rows {
+        let q = r["probe"].as_str().unwrap_or("").to_string();
+        let i = match out.iter().position(|g| g.question == q) {
+            Some(i) => i,
+            None => {
+                out.push(ProbeGroup { question: q, passed: 0, coherence: 0.0, replies: Vec::new() });
+                out.len() - 1
+            }
+        };
+        let g = &mut out[i];
+        let reply = r["reply"].as_str().filter(|s| !s.is_empty()).unwrap_or("(no words)");
+        g.replies.push(reply.to_string());
+        g.passed += (r["failed_requirement"].as_bool() == Some(false)) as usize;
+        g.coherence += r["coherence"].as_f64().unwrap_or(0.0);
+    }
+    for g in &mut out {
+        g.coherence /= g.replies.len().max(1) as f64;
+    }
+    out
+}
