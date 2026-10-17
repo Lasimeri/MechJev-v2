@@ -40,8 +40,8 @@ fn tools() -> Value {
          "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
         {"name": "probe", "description": "The acquisition curve: the fixed probe questions (probes.txt) put to the circuit alone from an empty conversation; the learner hears, learns and counts nothing. One row each (reply, coherence, requirements), also kept in probes.jsonl.",
          "inputSchema": {"type": "object", "properties": {}}},
-        {"name": "teach", "description": "Lessons from the teacher (the decision engine, which only decides): it chooses a lesson from the learner's record (lessons.txt), composes its own line a word at a time by Choice, lets the learner try alone, judges it (the requirements and the lesson's own check), demonstrates in a taught turn when it fails (3 at most) and tests mastery on a fresh line never taught. Minutes a lesson. Rows as lessons.jsonl.",
-         "inputSchema": {"type": "object", "properties": {"lessons": {"type": "integer", "description": "how many lessons the teacher chooses (1)"}, "measure": {"type": "boolean", "description": "measure every lesson on a fresh line; teach nothing"}, "lesson": {"type": "string", "description": "this lesson (a name in lessons.txt)"}}}},
+        {"name": "teach", "description": "Lessons from the teacher: Qwen3.8-35B teaching MechJev from outside (backend/build/teacher). The engine chooses a lesson from MechJev's record (lessons.txt); Qwen writes its line in plain English; MechJev tries alone and Qwen judges it (the requirements and the lesson's check); failed, a taught turn demonstrates (the engine choosing among MechJev's own words), 3 at most. measure: MechJev alone on the frozen test lines. Minutes a lesson; rows in lessons.jsonl; the teacher's printed output returned.",
+         "inputSchema": {"type": "object", "properties": {"lessons": {"type": "integer", "description": "how many lessons the teacher chooses (1)"}, "measure": {"type": "boolean", "description": "measure MechJev on the frozen test lines (teacher freeze first); teach nothing"}, "lesson": {"type": "string", "description": "this lesson (a name in lessons.txt)"}}}},
         {"name": "stats", "description": "What the learner knows: lexicon, speakable words, variable slots, circuit, turns, replay, most used words.",
          "inputSchema": {"type": "object", "properties": {}}},
         {"name": "judge", "description": "Typed questions to the decision engine (System One: noul, choice, score) about a state; calibrated probabilities back, no text.",
@@ -123,9 +123,27 @@ fn call(name: &str, args: &Value) -> Result<Value, String> {
             l.probe()
         }
         "teach" => {
-            let l = Learner::new();
-            l.ensure()?;
-            l.teach(args["lessons"].as_u64().unwrap_or(1), args["measure"].as_bool() == Some(true), args["lesson"].as_str())
+            /* the teacher program: Qwen teaching MechJev from outside */
+            let client = Client::from_env();
+            if !client.healthy() {
+                crate::engine::ensure(&client)?;
+            }
+            Learner::new().ensure()?;
+            let mut cmd = std::process::Command::new(crate::engine::teacher());
+            if args["measure"].as_bool() == Some(true) {
+                cmd.arg("measure");
+            } else {
+                cmd.arg("teach").arg(args["lessons"].as_u64().unwrap_or(1).to_string());
+                if let Some(name) = args["lesson"].as_str() {
+                    cmd.arg("--lesson").arg(name);
+                }
+            }
+            let out = cmd.output().map_err(|e| e.to_string())?;
+            Ok(json!({
+                "ok": out.status.success(),
+                "output": String::from_utf8_lossy(&out.stdout),
+                "errors": String::from_utf8_lossy(&out.stderr),
+            }))
         }
         "stats" => {
             let l = Learner::new();

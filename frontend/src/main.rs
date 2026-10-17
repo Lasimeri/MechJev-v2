@@ -39,13 +39,14 @@ enum Cmd {
     },
     /// The fixed probe questions to the circuit alone (probes.jsonl).
     Probe,
-    /// Lessons from the teacher, the decision engine (lessons.jsonl): N it
+    /// Lessons from the teacher, Qwen teaching MechJev from outside
+    /// (backend/build/teacher, lessons.jsonl): N it
     /// chooses, every lesson measured on a fresh line, or one lesson.
     Teach {
         /// How many lessons the teacher chooses.
         #[arg(default_value_t = 1)]
         lessons: u64,
-        /// Measure every lesson on a fresh line; teach nothing.
+        /// Measure MechJev on the frozen test lines (teacher freeze); teach nothing.
         #[arg(long)]
         measure: bool,
         /// This lesson (a name in lessons.txt).
@@ -131,41 +132,27 @@ fn probe() -> Result<(), String> {
     Ok(())
 }
 
+/// The teacher, Qwen teaching MechJev from outside (backend/build/teacher):
+/// the engine and MechJev's server up first, then its own output, live.
 fn teach(lessons: u64, measure: bool, lesson: Option<&str>) -> Result<(), String> {
     let client = Client::from_env();
     if !client.healthy() {
         engine::ensure(&client)?;
     }
-    let l = Learner::new();
-    l.ensure()?;
-    let rows = l.teach(lessons, measure, lesson)?;
-    for r in rows.as_array().map(Vec::as_slice).unwrap_or_default() {
-        let said = |a: &serde_json::Value| a["reply"].as_str().filter(|s| !s.is_empty()).unwrap_or("(no words)").to_string();
-        match r["line"].as_str() {
-            Some(line) => println!("lesson {}: the teacher: \"{line}\"", r["lesson"].as_str().unwrap_or("")),
-            None => println!("lesson {} (measured)", r["lesson"].as_str().unwrap_or("")),
-        }
-        for a in r["steps"].as_array().map(Vec::as_slice).unwrap_or_default() {
-            match a["demonstration"].as_u64() {
-                Some(k) => println!("  demonstration {k}: \"{}\"", said(a)),
-                None => println!(
-                    "  alone: \"{}\"  {} (check {:.2})",
-                    said(a),
-                    if a["passed"].as_bool() == Some(true) { "passed" } else { "failed" },
-                    a["check"].as_f64().unwrap_or(0.0)
-                ),
-            }
-        }
-        let h = &r["held_out"];
-        if h.is_object() {
-            println!(
-                "  never taught: the teacher: \"{}\"\n  alone: \"{}\"  {} (check {:.2})",
-                h["line"].as_str().unwrap_or(""),
-                said(h),
-                if h["passed"].as_bool() == Some(true) { "passed" } else { "failed" },
-                h["check"].as_f64().unwrap_or(0.0)
-            );
+    Learner::new().ensure()?;
+    let mut cmd = std::process::Command::new(engine::teacher());
+    if measure {
+        cmd.arg("measure");
+    } else {
+        cmd.arg("teach").arg(lessons.to_string());
+        if let Some(name) = lesson {
+            cmd.arg("--lesson").arg(name);
         }
     }
-    Ok(())
+    let status = cmd.status().map_err(|e| format!("{}: {e}", engine::teacher().display()))?;
+    if status.success() {
+        Ok(())
+    } else {
+        Err(format!("the teacher stopped: {status}"))
+    }
 }

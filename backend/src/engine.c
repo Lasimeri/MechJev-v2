@@ -959,3 +959,76 @@ int engine_read_split(engine_t *e, const segs_t *prompt, char **labels, size_t n
     pthread_mutex_unlock(&e->lock);
     return rc;
 }
+
+/* ---- generation (the teacher's lines) -------------------------------- */
+
+void gen_opts_default(gen_opts_t *o)
+{
+    o->temp = 0.5f;
+    o->top_k = 75;
+    o->top_p = 0.95f;
+    o->min_p = 0.05f;
+    o->repeat = 1.2f;
+    o->max_tokens = 64;
+    o->seed = 0;
+}
+
+int engine_generate(engine_t *e, const char *prompt, const gen_opts_t *o, char **text, size_t *ntok, char *err,
+                    size_t errlen)
+{
+    *text = NULL;
+    *ntok = 0;
+    pthread_mutex_lock(&e->lock);
+    llama_memory_t mem = llama_get_memory(e->ctx);
+    llama_memory_clear(mem, true);
+    e->cached.n = 0;
+    ivec_t toks = {0};
+    int rc = tokenize_with(e, prompt, strlen(prompt), true, true, &toks);
+    if (rc || !toks.n || toks.n + (size_t)o->max_tokens >= e->n_ctx) {
+        if (!rc)
+            seterr(err, errlen, "the prompt is %zu tokens; the context holds %zu", toks.n, e->n_ctx);
+        free(toks.v);
+        pthread_mutex_unlock(&e->lock);
+        return E_REJECTED;
+    }
+    plan_t p = {0};
+    for (size_t i = 0; i < toks.n; i++)
+        plan_push(&p, toks.v[i], (int32_t)i, 0, i + 1 == toks.n ? 0 : -1);
+    rc = decode(e, &p, NULL, NULL, err, errlen);
+    free(p.v);
+    struct llama_sampler *chain = llama_sampler_chain_init(llama_sampler_chain_default_params());
+    llama_sampler_chain_add(chain, llama_sampler_init_penalties(64, o->repeat, 0.0f, 0.0f));
+    llama_sampler_chain_add(chain, llama_sampler_init_top_k(o->top_k));
+    llama_sampler_chain_add(chain, llama_sampler_init_top_p(o->top_p, 1));
+    llama_sampler_chain_add(chain, llama_sampler_init_min_p(o->min_p, 1));
+    llama_sampler_chain_add(chain, llama_sampler_init_temp(o->temp));
+    llama_sampler_chain_add(chain, llama_sampler_init_dist(o->seed));
+    sb_t out;
+    sb_init(&out);
+    int32_t pos = (int32_t)toks.n;
+    for (int32_t k = 0; rc == E_OK && k < o->max_tokens; k++) {
+        llama_token t = llama_sampler_sample(chain, e->ctx, -1); /* it accepts the token itself */
+        if (llama_vocab_is_eog(e->vocab, t))
+            break;
+        char piece[256];
+        int32_t n = llama_token_to_piece(e->vocab, t, piece, sizeof piece, 0, false);
+        if (n > 0)
+            sb_putn(&out, piece, (size_t)n);
+        (*ntok)++;
+        plan_t one = {0};
+        plan_push(&one, t, pos++, 0, 0);
+        rc = decode(e, &one, NULL, NULL, err, errlen);
+        free(one.v);
+    }
+    llama_sampler_free(chain);
+    llama_memory_clear(mem, true); /* the decision path starts from nothing again */
+    e->cached.n = 0;
+    free(toks.v);
+    pthread_mutex_unlock(&e->lock);
+    if (rc != E_OK) {
+        sb_free(&out);
+        return rc;
+    }
+    *text = out.s ? sb_take(&out) : xstrdup("");
+    return E_OK;
+}

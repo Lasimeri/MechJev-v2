@@ -104,17 +104,6 @@ impl Learner {
         self.post("/v1/probe", json!({}))
     }
 
-    /// Lessons from the teacher (the decision engine): `lessons` it chooses,
-    /// or every lesson measured on a fresh line (`measure`), or one `lesson`.
-    /// One row each, as lessons.jsonl.
-    pub fn teach(&self, lessons: u64, measure: bool, lesson: Option<&str>) -> Result<Value, String> {
-        let mut body = json!({ "lessons": lessons, "measure": measure });
-        if let Some(name) = lesson {
-            body["lesson"] = json!(name);
-        }
-        self.post("/v1/teach", body)
-    }
-
     pub fn hear(&self, text: &str) -> Result<Value, String> {
         self.post("/v1/hear", json!({ "text": text }))
     }

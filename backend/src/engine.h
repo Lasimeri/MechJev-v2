@@ -69,6 +69,23 @@ int engine_tokenize_plain(engine_t *e, const char *text, ivec_t *out);
 
 void scored_free(scored_t *s);
 
+/* Generation, for the teacher's lines only (POST /v1/generate; teach.md):
+ * MechJev's replies are never generated. The sampling settings are the
+ * user's (temperature 0.5, top-k 75, top-p 0.95, min-p 0.05, repeat
+ * penalty 1.2), the seed the caller's (a clock seed). */
+typedef struct {
+    float temp, top_p, min_p, repeat;
+    int32_t top_k, max_tokens;
+    uint32_t seed;
+} gen_opts_t;
+void gen_opts_default(gen_opts_t *o);
+/* `prompt` is a whole rendered chat (special tokens parsed); *text the
+ * reply up to the end of generation or max_tokens, *ntok its tokens. The
+ * decision path's cached prefix is forgotten (the next decision prefills
+ * again): the hybrid model's recurrent state cannot share it. */
+int engine_generate(engine_t *e, const char *prompt, const gen_opts_t *o, char **text, size_t *ntok, char *err,
+                    size_t errlen);
+
 #define BRANCH_LIMIT 32000
 #define REQUEST_LIMIT 64000
 

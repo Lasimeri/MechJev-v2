@@ -18,7 +18,7 @@ all: build
 help: ## Show this help
 	@grep -E '^[a-zA-Z0-9_-]+:.*?## .*$$' $(MAKEFILE_LIST) | awk 'BEGIN {FS = ":.*?## "}; {printf "  %-10s %s\n", $$1, $$2}'
 
-build: $(B)/xks $(B)/learner frontend ## Build the decision engine (xks, against llama.cpp's CUDA build), the learner (no llama.cpp) and the front end (mjev2)
+build: $(B)/xks $(B)/learner $(B)/teacher frontend ## Build the decision engine (xks, against llama.cpp's CUDA build), the learner (no llama.cpp) and the front end (mjev2), and the teacher (Qwen teaching MechJev from outside)
 
 $(B):
 	@mkdir -p $(B)
@@ -57,10 +57,16 @@ clean:
 	rm -rf $(B) frontend/target
 
 # The learner links no llama.cpp: its decisions come from xks over HTTP.
-LEARNER_OBJS := $(B)/util.o $(B)/json.o $(B)/http.o $(B)/conf.o $(B)/circuit.o $(B)/hdmem.o $(B)/learner.o $(B)/teach.o \
+LEARNER_OBJS := $(B)/util.o $(B)/json.o $(B)/http.o $(B)/conf.o $(B)/circuit.o $(B)/hdmem.o $(B)/learner.o \
                 $(B)/speak.o $(B)/learner_main.o
 
 $(B)/learner: $(LEARNER_OBJS)
+	$(CC) $(CFLAGS) -o $@ $^ -lm
+
+# The teacher links no llama.cpp either: Qwen through xks, MechJev through learner serve.
+TEACHER_OBJS := $(B)/util.o $(B)/json.o $(B)/http.o $(B)/conf.o $(B)/teach.o $(B)/teacher_main.o
+
+$(B)/teacher: $(TEACHER_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 $(B)/learner_test: backend/tests/learner_test.c $(B)/learner.o $(B)/hdmem.o $(B)/circuit.o $(B)/util.o

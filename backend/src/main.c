@@ -177,6 +177,8 @@ static void *serve_conn(void *arg)
         want = "GET", route = 2;
     else if (!strcmp(path, "/v1/models"))
         want = "GET", route = 3;
+    else if (!strcmp(path, "/v1/generate"))
+        want = "POST", route = 5;
     else if (!strcmp(path, "/v1/systemone"))
         want = "POST", route = 4;
     int status = 200;
@@ -206,6 +208,8 @@ static void *serve_conn(void *arg)
         jobj_set(body, "site", jstr(site_name()));
         json_t *routes = jobj();
         jobj_set(routes, "POST /v1/systemone", jstr("a request: {\"state\": ..., \"questions\": {...}}"));
+        jobj_set(routes, "POST /v1/generate",
+                 jstr("the teacher's lines only: {\"system\": ..., \"user\": ...} -> {\"text\"}"));
         jobj_set(routes, "GET /health", jstr("the subject and where it runs"));
         jobj_set(routes, "GET /v1/models", jstr("the model ids this server answers to"));
         jobj_set(body, "routes", routes);
@@ -237,6 +241,64 @@ static void *serve_conn(void *arg)
         jobj_set(b, "alias_of", jstr(subject));
         jarr_push(data, b);
         jobj_set(body, "data", data);
+    } else if (route == 5) {
+        /* the teacher's lines (teach.md): a chat in, its text out. Never
+         * MechJev's replies: those are its own words, chosen by decisions */
+        question = true;
+        char err[1024] = "";
+        char perr[512];
+        json_t *req = authorized(s, r.auth) ? json_parse(r.body ? r.body : "", r.body_len, perr, sizeof perr) : NULL;
+        const json_t *sys = req ? jobj_get(req, "system") : NULL, *usr = req ? jobj_get(req, "user") : NULL;
+        if (!authorized(s, r.auth)) {
+            status = 401;
+            body = msg("invalid or missing API key (Authorization: Bearer KEY)");
+        } else if (!usr || usr->t != J_STR || (sys && sys->t != J_STR)) {
+            status = 422;
+            body = msg("POST {\"system\": \"...\", \"user\": \"...\"} (and optionally max_tokens, temperature, "
+                       "top_k, top_p, min_p, repeat_penalty, seed)");
+        } else if (s->judge->tpl != T_CHATML) {
+            status = 422;
+            body = msg("generation renders ChatML; this subject's template is another");
+        } else {
+            gen_opts_t o;
+            gen_opts_default(&o);
+            const json_t *v;
+            if ((v = jobj_get(req, "max_tokens")) && v->t == J_NUM && v->f >= 1 && v->f <= 512)
+                o.max_tokens = (int32_t)v->f;
+            if ((v = jobj_get(req, "temperature")) && v->t == J_NUM)
+                o.temp = (float)v->f;
+            if ((v = jobj_get(req, "top_k")) && v->t == J_NUM)
+                o.top_k = (int32_t)v->f;
+            if ((v = jobj_get(req, "top_p")) && v->t == J_NUM)
+                o.top_p = (float)v->f;
+            if ((v = jobj_get(req, "min_p")) && v->t == J_NUM)
+                o.min_p = (float)v->f;
+            if ((v = jobj_get(req, "repeat_penalty")) && v->t == J_NUM)
+                o.repeat = (float)v->f;
+            if ((v = jobj_get(req, "seed")) && v->t == J_NUM)
+                o.seed = (uint32_t)v->u;
+            sb_t p;
+            sb_init(&p);
+            sb_printf(&p, "<|im_start|>system\n%s<|im_end|>\n<|im_start|>user\n%s<|im_end|>\n"
+                          "<|im_start|>assistant\n<think>\n\n</think>\n\n",
+                      sys ? sys->s : "", usr->s);
+            char *text = NULL;
+            size_t ntok = 0;
+            double t0 = now_ms();
+            int rc = engine_generate(s->eng, p.s, &o, &text, &ntok, err, sizeof err);
+            sb_free(&p);
+            if (rc == E_OK) {
+                body = jobj();
+                jobj_set(body, "text", jstr(text));
+                jobj_set(body, "tokens", ju64(ntok));
+                jobj_set(body, "ms", jf64(round(now_ms() - t0)));
+                free(text);
+            } else {
+                status = rc == E_REJECTED ? 422 : 502;
+                body = msg(err);
+            }
+        }
+        json_free(req);
     } else {
         question = true;
         char err[1024] = "";

@@ -38,6 +38,11 @@ pub fn learner() -> PathBuf {
     program("learner", &["MJEV2_LEARNER"])
 }
 
+/// The teacher's binary (Qwen teaching MechJev from outside).
+pub fn teacher() -> PathBuf {
+    program("teacher", &["MJEV2_TEACHER"])
+}
+
 /// An executable `name` on PATH.
 pub fn on_path(name: &str) -> Option<PathBuf> {
     use std::os::unix::fs::PermissionsExt;

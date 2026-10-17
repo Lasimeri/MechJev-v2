@@ -1,28 +1,27 @@
-/* teach.c: the decision engine as the learner's teacher (teach.h). */
+/* teach.c: the teacher (teach.h): Qwen3.8-35B, through the engine, talking
+ * to MechJev from outside. */
 #define _GNU_SOURCE
 #include "teach.h"
 
 #include <ctype.h>
-#include <math.h>
+#include <time.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
-#include <strings.h>
 
+#include "http.h"
 #include "util.h"
 
-#define LINE_TOKENS 16 /* words and marks in a line, at most */
-#define GROUP 25       /* words in one Choice (the engine's comfortable size, as speak.c's widen) */
-#define FINALISTS 12   /* group candidates put to the final Choice */
-#define GROUP_MIN_P 0.05 /* a group passes on every word it gives at least this ("do" fell under 0.10) */
-#define LINE_SENTENCES 2 /* a teacher's line: one sentence, or two (tell, then ask) */
-#define NOT_LISTED "(not listed)"
+#define TIMEOUT_MS 900000
 
-static const char *TEACHER = "You are teaching English to a beginner, who learns to speak only from what you say "
-                             "to it and how you judge its replies.";
-static const char *MARKS[] = {".", "?", "!", ","};
+/* Who the teacher is, for its own lines (the system text of /v1/generate). */
+static const char *WRITER =
+    "You are a patient English teacher talking with MechJev, a beginner who is learning to speak English "
+    "and knows only a few words. You talk with it as a kind person would: short, simple, natural English. "
+    "Write only your next line to MechJev: one or two short sentences, nothing else, no quotation marks, "
+    "no notes, no translation.";
 
-/* ---- loading ---------------------------------------------------------- */
+/* ---- the lessons -------------------------------------------------------- */
 
 static char *trim(char *s)
 {
@@ -34,12 +33,12 @@ static char *trim(char *s)
     return s;
 }
 
-int teacher_load(teacher_t *t, const char *lessons_path, const char *words_path, char *err, size_t errlen)
+int lessons_load(lessons_t *ls, const char *path, char *err, size_t errlen)
 {
-    memset(t, 0, sizeof *t);
-    char *text = read_file(lessons_path, NULL);
+    memset(ls, 0, sizeof *ls);
+    char *text = read_file(path, NULL);
     if (!text) {
-        snprintf(err, errlen, "%s: cannot read the lessons", lessons_path);
+        snprintf(err, errlen, "%s: cannot read the lessons", path);
         return -1;
     }
     int line_no = 0;
@@ -61,422 +60,225 @@ int teacher_load(teacher_t *t, const char *lessons_path, const char *words_path,
             p = bar + 1;
         }
         if (nf < 3 || !*field[0] || !*field[1] || !*field[2]) {
-            snprintf(err, errlen, "%s: line %d: a lesson is NAME | GOAL | CHECK [| HELD-OUT GOAL [| SHOWN WORDS]]", lessons_path,
-                     line_no);
+            snprintf(err, errlen, "%s: line %d: a lesson is NAME | GOAL | CHECK [| HELD-OUT GOAL [| SHOWN WORDS]]",
+                     path, line_no);
             free(text);
-            teacher_free(t);
+            lessons_free(ls);
             return -1;
         }
-        t->lesson = xrealloc(t->lesson, (t->n + 1) * sizeof *t->lesson);
-        lesson_t *ls = &t->lesson[t->n++];
-        ls->name = xstrdup(field[0]);
-        ls->goal = xstrdup(field[1]);
-        ls->check = xstrdup(field[2]);
-        ls->held_goal = nf > 3 && *field[3] ? xstrdup(field[3]) : NULL;
-        ls->show = nf > 4 && *field[4] ? xstrdup(field[4]) : NULL;
+        ls->v = xrealloc(ls->v, (ls->n + 1) * sizeof *ls->v);
+        lesson_t *l = &ls->v[ls->n++];
+        l->name = xstrdup(field[0]);
+        l->goal = xstrdup(field[1]);
+        l->check = xstrdup(field[2]);
+        l->held_goal = nf > 3 && *field[3] ? xstrdup(field[3]) : NULL;
+        l->show = nf > 4 && *field[4] ? xstrdup(field[4]) : NULL;
     }
     free(text);
-    if (!t->n) {
-        snprintf(err, errlen, "%s: no lessons", lessons_path);
+    if (!ls->n) {
+        snprintf(err, errlen, "%s: no lessons", path);
         return -1;
     }
-    text = read_file(words_path, NULL);
-    if (!text) {
-        snprintf(err, errlen, "%s: cannot read the teacher's words", words_path);
-        teacher_free(t);
-        return -1;
-    }
-    sv = NULL;
-    for (char *ln = strtok_r(text, "\n", &sv); ln; ln = strtok_r(NULL, "\n", &sv)) {
-        char *hash = strchr(ln, '#');
-        if (hash)
-            *hash = 0;
-        char *wv = NULL;
-        for (char *w = strtok_r(ln, " \t\r", &wv); w; w = strtok_r(NULL, " \t\r", &wv)) {
-            t->words = xrealloc(t->words, (t->nwords + 1) * sizeof *t->words);
-            t->words[t->nwords++] = xstrdup(w);
-        }
-    }
-    free(text);
     return 0;
 }
 
-void teacher_free(teacher_t *t)
+void lessons_free(lessons_t *ls)
 {
-    for (size_t i = 0; i < t->n; i++) {
-        free(t->lesson[i].name);
-        free(t->lesson[i].goal);
-        free(t->lesson[i].check);
-        free(t->lesson[i].held_goal);
-        free(t->lesson[i].show);
+    for (size_t i = 0; i < ls->n; i++) {
+        free(ls->v[i].name);
+        free(ls->v[i].goal);
+        free(ls->v[i].check);
+        free(ls->v[i].held_goal);
+        free(ls->v[i].show);
     }
-    free(t->lesson);
-    for (size_t i = 0; i < t->nwords; i++)
-        free(t->words[i]);
-    free(t->words);
-    memset(t, 0, sizeof *t);
+    free(ls->v);
+    memset(ls, 0, sizeof *ls);
 }
 
-int teacher_find(const teacher_t *t, const char *name)
+int lessons_find(const lessons_t *ls, const char *name)
 {
-    for (size_t i = 0; i < t->n; i++)
-        if (!strcmp(t->lesson[i].name, name))
+    for (size_t i = 0; i < ls->n; i++)
+        if (!strcmp(ls->v[i].name, name))
             return (int)i;
     return -1;
 }
 
-/* ---- choosing the lesson ---------------------------------------------- */
+/* ---- over HTTP ---------------------------------------------------------- */
 
-int teacher_choose(const teacher_t *t, const speak_cfg_t *cfg, const char *record, size_t *lesson, char *err,
+/* POST body to host:port path; the parsed response (owned by the caller). */
+static json_t *post(const char *where, const char *path, json_t *body, char *err, size_t errlen)
+{
+    char *s = json_dump(body);
+    json_free(body);
+    char *out = NULL;
+    size_t on = 0;
+    int st = http_call(where, "POST", path, s, strlen(s), &out, &on, TIMEOUT_MS);
+    free(s);
+    if (st < 0) {
+        snprintf(err, errlen, "%s does not answer (%s)", where, path);
+        free(out);
+        return NULL;
+    }
+    char perr[256];
+    json_t *v = json_parse(out ? out : "", on, perr, sizeof perr);
+    free(out);
+    if (st != 200 || !v) {
+        const json_t *m = v ? jobj_get(v, "message") : NULL;
+        snprintf(err, errlen, "%s%s said %d: %s", where, path, st, m && m->t == J_STR ? m->s : v ? "?" : perr);
+        json_free(v);
+        return NULL;
+    }
+    return v;
+}
+
+/* One question to the engine about `state`; its answer (owned by *resp). */
+static const json_t *decide(const teacher_t *t, const char *state, const char *id, json_t *q, json_t **resp,
+                            char *err, size_t errlen)
+{
+    json_t *req = jobj(), *qs = jobj();
+    jobj_set(req, "state", jstr(state));
+    jobj_set(qs, id, q);
+    jobj_set(req, "questions", qs);
+    *resp = post(t->engine, "/v1/systemone", req, err, errlen);
+    return *resp ? jobj_get(jobj_get(*resp, "answers"), id) : NULL;
+}
+
+/* ---- the teacher -------------------------------------------------------- */
+
+static uint32_t clock_seed32(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    uint64_t s = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    return (uint32_t)(splitmix64(&s) >> 32);
+}
+
+int teacher_write(const teacher_t *t, const char *goal, const char *context, char **line, char *err,
+                  size_t errlen)
+{
+    sb_t u;
+    sb_init(&u);
+    sb_printf(&u, "What your next line should do: %s", goal);
+    if (context && *context)
+        sb_printf(&u, "\n\n%s\n\nSay it in your own words, not as you have said it before.", context);
+    json_t *req = jobj();
+    jobj_set(req, "system", jstr(WRITER));
+    jobj_set(req, "user", jstr(u.s));
+    jobj_set(req, "max_tokens", ju64(48));
+    jobj_set(req, "seed", ju64(clock_seed32()));
+    sb_free(&u);
+    json_t *r = post(t->engine, "/v1/generate", req, err, errlen);
+    if (!r)
+        return -1;
+    const json_t *txt = jobj_get(r, "text");
+    /* one line: the first, without quotation marks around it */
+    char *s = xstrdup(txt && txt->t == J_STR ? txt->s : "");
+    json_free(r);
+    char *nl = strchr(s, '\n');
+    if (nl)
+        *nl = 0;
+    char *b = trim(s);
+    size_t n = strlen(b);
+    if (n >= 2 && (b[0] == '"' || b[0] == '\'') && b[n - 1] == b[0]) {
+        b[n - 1] = 0;
+        b++;
+    }
+    if (!*b) {
+        free(s);
+        snprintf(err, errlen, "the teacher wrote nothing");
+        return -1;
+    }
+    *line = xstrdup(b);
+    free(s);
+    return 0;
+}
+
+int teacher_choose(const teacher_t *t, const lessons_t *ls, const char *record, size_t *lesson, char *err,
                    size_t errlen)
 {
     sb_t ins;
     sb_init(&ins);
-    sb_printf(&ins, "%s The lessons, and what the learner has shown in each so far:\n%s\nWhich lesson should "
-                    "you teach next? Choose the one it needs most now; a lesson that has not worked the same "
-                    "way twice running can wait while you teach another.",
-              TEACHER, record);
-    char **keys = xmalloc(t->n * sizeof *keys);
-    for (size_t i = 0; i < t->n; i++)
-        keys[i] = t->lesson[i].name;
-    json_t *qs = jobj();
-    jobj_set(qs, "lesson", speak_choice_q(ins.s, keys, t->n));
+    sb_printf(&ins, "You teach English to MechJev, a beginner. The lessons, and what it has shown in each "
+                    "so far:\n%s\nWhich lesson should you teach next? Choose the one it needs most now; a lesson "
+                    "that has not worked the same way twice running can wait while you teach another.",
+              record);
+    json_t *q = jobj(), *c = jobj();
+    jobj_set(q, "type", jstr("choice"));
+    jobj_set(q, "instructions", jstr(ins.s));
     sb_free(&ins);
-    free(keys);
+    for (size_t i = 0; i < ls->n; i++)
+        jobj_set(c, ls->v[i].name, jnull());
+    jobj_set(q, "criteria", c);
     json_t *resp = NULL;
-    json_t *ans = speak_ask(cfg, "A teacher plans an English lesson for a beginner.", qs, &resp, err, errlen);
-    if (!ans)
-        return -1;
-    const json_t *c = jobj_get(jobj_get(ans, "lesson"), "choice");
-    int i = c && c->t == J_STR ? teacher_find(t, c->s) : -1;
+    const json_t *a = decide(t, "A teacher plans an English lesson for a beginner.", "lesson", q, &resp, err, errlen);
+    const json_t *ch = a ? jobj_get(a, "choice") : NULL;
+    int i = ch && ch->t == J_STR ? lessons_find(ls, ch->s) : -1;
     json_free(resp);
     if (i < 0) {
-        snprintf(err, errlen, "the engine chose no lesson");
+        if (a)
+            snprintf(err, errlen, "the engine chose no lesson");
         return -1;
     }
     *lesson = (size_t)i;
     return 0;
 }
 
-/* ---- composing a line ------------------------------------------------- */
-
-static bool has_word(char **v, size_t n, const char *w)
-{
-    for (size_t i = 0; i < n; i++)
-        if (!strcasecmp(v[i], w))
-            return true;
-    return false;
-}
-
-/* The teacher's words and the learner's, once each (the teacher's spelling
- * first: "MechJev", not "mechjev"); no marks, no start or end. */
-static char **vocabulary(const teacher_t *t, const learner_t *l, size_t *n)
-{
-    char **v = xmalloc((t->nwords + l->n + 1) * sizeof *v);
-    size_t k = 0;
-    for (size_t i = 0; i < t->nwords; i++)
-        if (!has_word(v, k, t->words[i]))
-            v[k++] = t->words[i];
-    for (size_t i = 0; i < l->n; i++) {
-        const char *w = l->v[i].word;
-        if (!strcmp(w, START) || !strcmp(w, END) || is_punct(w) || has_word(v, k, w))
-            continue;
-        v[k++] = l->v[i].word;
-    }
-    *n = k;
-    return v;
-}
-
-/* What the engine is asked at each word. The groups: which of these words
- * comes next. The finalists: which goes on best, the line framed as
- * unfinished (asked "the best way to go on", a line that looked finished
- * won: "Hello how?", "MechJev?", 2026-10-17; the same myopia the learner's
- * own word choice had, speak.md). */
-static char *instructions(const char *goal, char **said, size_t t, bool groups, bool vary)
-{
-    sb_t b;
-    sb_init(&b);
-    sb_printf(&b, "%s What this line of yours should do: %s Use short, simple words.%s ", TEACHER, goal,
-              vary ? " Say it in a new way, not as in your lines so far." : "");
-    char *so_far = t ? render_words(said, t) : NULL;
-    if (!t)
-        sb_puts(&b, "Your line is empty so far. ");
-    else {
-        sb_puts(&b, "Your line so far: ");
-        json_quote(&b, so_far, strlen(so_far));
-        sb_puts(&b, ". ");
-    }
-    free(so_far);
-    if (groups)
-        sb_puts(&b, "Which of these should come next in it? Choose " NOT_LISTED " if none of these should.");
-    else
-        sb_puts(&b, "It is unfinished: more words will follow. Which of these is the best start of clear, "
-                    "correct English that does what the line should do?");
-    return sb_take(&b);
-}
-
-/* Once a sentence of the line has ended: does it do all it should? (The
- * end is decided by this Noul, as the learner's is, never as one more
- * option among words.) */
-static int line_does_goal(const speak_cfg_t *cfg, const char *state, const char *goal, char **said, size_t t,
-                          double *p, char *err, size_t errlen)
-{
-    char *so_far = render_words(said, t);
-    sb_t ins;
-    sb_init(&ins);
-    sb_printf(&ins, "%s Your line so far is ", TEACHER);
-    json_quote(&ins, so_far, strlen(so_far));
-    sb_printf(&ins, ". It is a complete, well-formed English line, and it does all that this line should do: %s",
-              goal);
-    free(so_far);
-    json_t *q = jobj();
-    jobj_set(q, "type", jstr("noul"));
-    jobj_set(q, "instructions", jstr(ins.s));
-    sb_free(&ins);
-    json_t *qs = jobj();
-    jobj_set(qs, "done", q);
-    json_t *resp = NULL;
-    json_t *ans = speak_ask(cfg, state, qs, &resp, err, errlen);
-    if (!ans)
-        return -1;
-    const json_t *v = jobj_get(jobj_get(ans, "done"), "noul");
-    *p = v && v->t == J_NUM ? v->f : 0;
-    json_free(resp);
-    return 0;
-}
-
-int teacher_compose(const teacher_t *t, const speak_cfg_t *cfg, const learner_t *l, const char *goal, const char *context,
-                    char **line, double *goal_p, json_t **trace, char *err, size_t errlen)
-{
-    size_t nv;
-    char **vocab = vocabulary(t, l, &nv);
-    char *said[LINE_TOKENS + 1];
-    size_t n = 0;
-    json_t *tr = jarr();
-    sb_t sst;
-    sb_init(&sst);
-    sb_puts(&sst, "A conversation in English between a teacher and a beginner it teaches.");
-    if (context && *context)
-        sb_printf(&sst, "\n%s", context);
-    char *state = sb_take(&sst);
-    int rc = 0;
-    size_t *idx = xmalloc((nv + 4) * sizeof *idx);
-    /* the keeper, for the teacher: the sentence end where the line did its
-     * goal best (as the learner's replies, its lines ran on and decayed) */
-    size_t best_n = 0, sentences = 0;
-    double best_p = -1;
-    while (n < LINE_TOKENS) {
-        uint64_t seed = speak_clock_seed(), s = seed;
-        bool after_word = n > 0 && !is_punct(said[n - 1]);
-        /* the candidates: every word but the one before, the marks after a
-         * word; shuffled by the clock seed, so no group order is favoured
-         * (and one option rotation is enough for the groups) */
-        size_t np = 0;
-        for (size_t i = 0; i < nv; i++)
-            if (!n || strcasecmp(vocab[i], said[n - 1]))
-                idx[np++] = i;
-        for (size_t m = 0; after_word && m < sizeof MARKS / sizeof *MARKS; m++)
-            idx[np++] = nv + m;
-        for (size_t i = np; i > 1; i--) {
-            size_t j = (size_t)(splitmix64(&s) % i), tmp = idx[i - 1];
-            idx[i - 1] = idx[j];
-            idx[j] = tmp;
-        }
-        char *gi = instructions(goal, said, n, true, context && *context);
-        json_t *qs = jobj();
-        size_t ng = 0;
-        for (size_t at = 0; at < np; at += GROUP, ng++) {
-            size_t m = np - at < GROUP ? np - at : GROUP;
-            char **keys = xmalloc((m + 1) * sizeof *keys);
-            for (size_t i = 0; i < m; i++)
-                keys[i] = idx[at + i] < nv ? vocab[idx[at + i]] : (char *)MARKS[idx[at + i] - nv];
-            keys[m] = NOT_LISTED;
-            char id[24];
-            snprintf(id, sizeof id, "g%zu", ng);
-            jobj_set(qs, id, speak_choice_q(gi, keys, m + 1));
-            free(keys);
-        }
-        free(gi);
-        json_t *resp = NULL;
-        json_t *ans = speak_ask_rotations(cfg, state, qs, 1, &resp, err, errlen);
-        if (!ans) {
-            rc = -1;
-            break;
-        }
-        /* from each group, every word it gives GROUP_MIN_P or more, best of
-         * all first (only each group's top lost the right word: after
-         * "Hello how are" the finalists were "is", "do" and "?", no "you") */
-        char *fin[FINALISTS + 1];
-        double fs[FINALISTS + 1];
-        size_t nf = 0;
-        for (size_t g = 0; g < ng; g++) {
-            char id[24];
-            snprintf(id, sizeof id, "g%zu", g);
-            const json_t *pr = jobj_get(jobj_get(ans, id), "probabilities");
-            for (size_t k = 0; pr && pr->t == J_OBJ && k < pr->n; k++) {
-                const json_t *v = pr->items[k];
-                double sc = v && v->t == J_NUM ? v->f : 0;
-                if (sc < GROUP_MIN_P || !strcmp(pr->keys[k], NOT_LISTED))
-                    continue;
-                size_t at = nf;
-                while (at > 0 && fs[at - 1] < sc)
-                    at--;
-                if (at >= FINALISTS)
-                    continue;
-                memmove(&fin[at + 1], &fin[at], (nf - at) * sizeof *fin);
-                memmove(&fs[at + 1], &fs[at], (nf - at) * sizeof *fs);
-                fin[at] = xstrdup(pr->keys[k]);
-                fs[at] = sc;
-                if (nf < FINALISTS)
-                    nf++;
-                else
-                    free(fin[FINALISTS]);
-            }
-        }
-        json_free(resp);
-        if (!nf)
-            break; /* nothing may come next: the mark is chosen below */
-        /* the final Choice: the line as it would go on with each finalist */
-        char **keys = xmalloc(nf * sizeof *keys);
-        for (size_t i = 0; i < nf; i++) {
-            said[n] = fin[i];
-            keys[i] = render_words(said, n + 1);
-        }
-        char *fi = instructions(goal, said, n, false, context && *context);
-        json_t *q2 = jobj();
-        jobj_set(q2, "next", speak_choice_q(fi, keys, nf));
-        free(fi);
-        json_t *r2 = NULL;
-        json_t *a2 = speak_ask(cfg, state, q2, &r2, err, errlen);
-        const json_t *c2 = a2 ? jobj_get(jobj_get(a2, "next"), "choice") : NULL;
-        int pick = -1;
-        for (size_t i = 0; c2 && c2->t == J_STR && i < nf; i++)
-            if (!strcmp(keys[i], c2->s))
-                pick = (int)i;
-        json_t *step = jobj();
-        jobj_set(step, "t", ju64(n));
-        jobj_set(step, "seed", ju64(seed));
-        json_t *opts = jobj();
-        for (size_t i = 0; i < nf; i++)
-            jobj_set(opts, keys[i], jf64(round(speak_prob(jobj_get(a2, "next"), keys[i]) * 1e4) / 1e4));
-        jobj_set(step, "options", opts);
-        for (size_t i = 0; i < nf; i++)
-            free(keys[i]);
-        free(keys);
-        json_free(r2);
-        if (!a2 || pick < 0) {
-            for (size_t i = 0; i < nf; i++)
-                free(fin[i]);
-            json_free(step);
-            if (a2)
-                snprintf(err, errlen, "the engine chose nothing for the line");
-            rc = -1;
-            break;
-        }
-        jobj_set(step, "pick", jstr(fin[pick]));
-        said[n++] = fin[pick];
-        for (size_t i = 0; i < nf; i++)
-            if ((int)i != pick)
-                free(fin[i]);
-        /* a sentence has ended: does the line do all it should? */
-        bool done = false;
-        if (speak_sentence_end(said[n - 1])) {
-            double p = 0;
-            if (line_does_goal(cfg, state, goal, said, n, &p, err, errlen)) {
-                json_free(step);
-                rc = -1;
-                break;
-            }
-            jobj_set(step, "does_its_goal", jf64(round(p * 1e4) / 1e4));
-            if (p > best_p) {
-                best_p = p;
-                best_n = n;
-            }
-            sentences++;
-            done = p >= 0.5 || sentences >= LINE_SENTENCES;
-        }
-        jarr_push(tr, step);
-        if (done)
-            break;
-    }
-    free(idx);
-    /* cut back to the best sentence end (the words after it go) */
-    if (!rc && best_n && best_n < n) {
-        for (size_t i = best_n; i < n; i++)
-            free(said[i]);
-        n = best_n;
-    }
-    if (!rc && n && !speak_sentence_end(said[n - 1])) {
-        /* cut at its length or with nothing to go on: the engine ends it
-         * with the mark that fits (a comma left at the end goes first) */
-        if (is_punct(said[n - 1]))
-            free(said[--n]);
-        static const char *ends[] = {".", "?", "!"};
-        char *keys[3];
-        for (int m = 0; m < 3; m++) {
-            said[n] = (char *)ends[m];
-            keys[m] = render_words(said, n + 1);
-        }
-        char *fi = instructions(goal, said, n, false, context && *context);
-        json_t *q = jobj();
-        jobj_set(q, "end", speak_choice_q(fi, keys, 3));
-        free(fi);
-        json_t *r = NULL;
-        json_t *a = speak_ask(cfg, state, q, &r, err, errlen);
-        const json_t *c = a ? jobj_get(jobj_get(a, "end"), "choice") : NULL;
-        int pick = 0;
-        for (int m = 0; c && c->t == J_STR && m < 3; m++)
-            if (!strcmp(keys[m], c->s))
-                pick = m;
-        for (int m = 0; m < 3; m++)
-            free(keys[m]);
-        json_free(r);
-        said[n++] = xstrdup(ends[pick]);
-    }
-    if (!rc && !n) {
-        snprintf(err, errlen, "the engine composed no line");
-        rc = -1;
-    }
-    if (!rc)
-        *line = render_words(said, n);
-    for (size_t i = 0; i < n; i++)
-        free(said[i]);
-    free(vocab);
-    free(state);
-    if (rc) {
-        json_free(tr);
-        return -1;
-    }
-    *goal_p = best_p < 0 ? 0 : best_p;
-    *trace = tr;
-    return 0;
-}
-
-/* ---- judging the learner's reply -------------------------------------- */
-
-int teacher_check(const speak_cfg_t *cfg, const lesson_t *ls, const char *line, const char *reply, double *p,
+int teacher_check(const teacher_t *t, const lesson_t *l, const char *line, const char *reply, double *p,
                   char *err, size_t errlen)
 {
     sb_t st;
     sb_init(&st);
     sb_printf(&st, "A conversation in English.\nPerson: %s\n\nThe newest reply, the one to judge: ", line);
     json_quote(&st, reply, strlen(reply));
-    json_t *q = jobj();
-    jobj_set(q, "type", jstr("noul"));
     sb_t ins;
     sb_init(&ins);
-    sb_printf(&ins, "About the newest reply only: %s", ls->check);
+    sb_printf(&ins, "About the newest reply only: %s", l->check);
+    json_t *q = jobj();
+    jobj_set(q, "type", jstr("noul"));
     jobj_set(q, "instructions", jstr(ins.s));
     sb_free(&ins);
-    json_t *qs = jobj();
-    jobj_set(qs, "check", q);
     json_t *resp = NULL;
-    json_t *ans = speak_ask(cfg, st.s, qs, &resp, err, errlen);
+    const json_t *a = decide(t, st.s, "check", q, &resp, err, errlen);
     sb_free(&st);
-    if (!ans)
+    if (!a) {
+        json_free(resp);
         return -1;
-    const json_t *v = jobj_get(jobj_get(ans, "check"), "noul");
+    }
+    const json_t *v = jobj_get(a, "noul");
     *p = v && v->t == J_NUM ? v->f : 0;
     json_free(resp);
     return 0;
+}
+
+int teacher_try(const teacher_t *t, const char *line, json_t **rec, char *err, size_t errlen)
+{
+    json_t *req = jobj();
+    jobj_set(req, "message", jstr(line));
+    *rec = post(t->learner, "/v1/probe", req, err, errlen);
+    return *rec ? 0 : -1;
+}
+
+int teacher_demonstrate(const teacher_t *t, const char *line, const char *show, json_t **rec, char *err,
+                        size_t errlen)
+{
+    json_t *req = jobj();
+    jobj_set(req, "message", jstr(line));
+    if (show && *show)
+        jobj_set(req, "show", jstr(show));
+    *rec = post(t->learner, "/v1/talk", req, err, errlen);
+    return *rec ? 0 : -1;
+}
+
+bool teacher_same_text(const char *a, const char *b)
+{
+    for (;;) {
+        while (*a && !isalnum((unsigned char)*a))
+            a++;
+        while (*b && !isalnum((unsigned char)*b))
+            b++;
+        if (!*a || !*b)
+            return !*a && !*b;
+        if (tolower((unsigned char)*a++) != tolower((unsigned char)*b++))
+            return false;
+    }
 }
