@@ -31,6 +31,8 @@ pub fn data_dir() -> PathBuf {
 
 pub struct Talk {
     pub input: Editor,
+    /// The next turns spoken by the circuit alone (F2).
+    pub alone: bool,
     /// The last turns' records, oldest first.
     pub turns: Vec<Value>,
     /// The reply so far of a turn in progress.
@@ -45,6 +47,7 @@ impl Default for Talk {
     fn default() -> Self {
         Self {
             input: Editor::new(true),
+            alone: false,
             turns: Vec::new(),
             speaking: None,
             back: 0,

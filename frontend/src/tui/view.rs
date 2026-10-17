@@ -998,7 +998,8 @@ fn talk(f: &mut Frame, a: &mut App) {
         let reply = t["reply"].as_str().unwrap_or("");
         let reply = if reply.is_empty() { "(no words yet)" } else { reply };
         for (i, l) in wrap(reply, cw.saturating_sub(5)).into_iter().enumerate() {
-            conv.push(vec![dim(if i == 0 { "it   " } else { "     " }), text(l).bold()]);
+            let who = if t["mode"].as_str() == Some("alone") { "solo " } else { "it   " };
+            conv.push(vec![dim(if i == 0 { who } else { "     " }), text(l).bold()]);
         }
         let mut note = super::talk::scored_words(t);
         if let Some(c) = t["coherence_final"].as_f64() {
@@ -1077,12 +1078,13 @@ fn talk(f: &mut Frame, a: &mut App) {
     }
     // the line to say
     let iy = (h - 3) as u16;
-    let lead = " say › ";
+    let lead = if a.talk.alone { " say (circuit alone) › " } else { " say › " };
     let shown_in = a.talk.input.visible(w.saturating_sub(chars(lead) + 1), 1);
     let (_, cx) = a.talk.input.cursor_on_screen();
     f.set(iy, vec![text(lead).bold(), text(shown_in.first().cloned().unwrap_or_default())], theme::BG);
     if a.prompt.is_none() {
         f.cursor = Some(((chars(lead) + cx) as u16, iy));
     }
-    footer(f, a, &[("enter", "say it"), ("esc", "home"), ("pgup/pgdn", "scroll")]);
+    let f2 = if a.talk.alone { "taught again" } else { "the circuit alone" };
+    footer(f, a, &[("enter", "say it"), ("f2", f2), ("esc", "home"), ("pgup/pgdn", "scroll")]);
 }

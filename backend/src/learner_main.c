@@ -266,10 +266,15 @@ static int persist(ctx_t *c, const json_t *rec, char *err, size_t errlen)
     return 0;
 }
 
-static int one_turn(ctx_t *c, const char *message, char **reply, json_t **rec, char *err, size_t errlen)
+/* One turn; alone: the circuit speaks by itself this turn (the engine
+ * perceives and judges, chooses no word, nothing is learned). */
+static int one_turn(ctx_t *c, const char *message, bool alone, char **reply, json_t **rec, char *err,
+                    size_t errlen)
 {
     pthread_mutex_lock(&c->mu);
-    int rc = speak_turn(c->l, &c->cfg, &c->h, message, reply, rec, err, errlen);
+    speak_cfg_t cfg = c->cfg;
+    cfg.alone = cfg.alone || alone;
+    int rc = speak_turn(c->l, &cfg, &c->h, message, reply, rec, err, errlen);
     char *sp = join(c->dir, "speaking.txt");
     unlink(sp); /* the turn is over: nothing is being said */
     free(sp);
@@ -385,7 +390,7 @@ static int cmd_talk(ctx_t *c, int argc, char **argv)
         }
         char *reply;
         json_t *rec;
-        if (one_turn(c, m.s, &reply, &rec, err, sizeof err)) {
+        if (one_turn(c, m.s, false, &reply, &rec, err, sizeof err)) {
             fprintf(stderr, "error: %s\n", err);
             return 1;
         }
@@ -410,7 +415,7 @@ static int cmd_talk(ctx_t *c, int argc, char **argv)
             continue;
         char *reply;
         json_t *rec;
-        if (one_turn(c, line, &reply, &rec, err, sizeof err)) {
+        if (one_turn(c, line, false, &reply, &rec, err, sizeof err)) {
             fprintf(stderr, "error: %s\n", err);
             continue;
         }
@@ -586,7 +591,8 @@ static void *serve_conn(void *arg)
         } else if (!strcmp(r.path, "/v1/talk")) {
             char *reply;
             json_t *rec;
-            if (one_turn(c, m->s, &reply, &rec, err, sizeof err))
+            const json_t *al = jobj_get(v, "alone");
+            if (one_turn(c, m->s, al && al->t == J_BOOL && al->b, &reply, &rec, err, sizeof err))
                 reply_json(k->fd, 502, message(err));
             else {
                 free(reply);
@@ -611,7 +617,7 @@ static void *serve_conn(void *arg)
         json_free(v);
     } else {
         reply_json(k->fd, 404, message("routes: GET /health, GET /v1/stats, POST /v1/talk {message}, "
-                                       "POST /v1/hear {text}"));
+                                       "POST /v1/hear {text}; talk takes \"alone\": true for the circuit by itself"));
     }
     http_req_free(&r);
     close(k->fd);

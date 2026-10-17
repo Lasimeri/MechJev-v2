@@ -35,7 +35,7 @@ fn tools() -> Value {
         {"name": "keys", "description": "Press keys in the TUI, tmux names: Enter, Escape, Tab, Up, Down, PageUp, PageDown, F1, F5, C-u, t (the talk screen from home).",
          "inputSchema": {"type": "object", "properties": {"keys": {"type": "array", "items": {"type": "string"}}}, "required": ["keys"]}},
         {"name": "talk", "description": "Say a message to the learner and wait for its reply (minutes: every word is a decision of the 35B). Returns the reply, each word with its options, per-token score and seeds, and the measures. The TUI shows the turn as well.",
-         "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}}, "required": ["message"]}},
+         "inputSchema": {"type": "object", "properties": {"message": {"type": "string"}, "alone": {"type": "boolean", "description": "the circuit speaks by itself: no word chosen by the engine, nothing learned"}}, "required": ["message"]}},
         {"name": "hear", "description": "Let the learner read English text (its words counted; nothing else is learned from hearing).",
          "inputSchema": {"type": "object", "properties": {"text": {"type": "string"}}, "required": ["text"]}},
         {"name": "stats", "description": "What the learner knows: lexicon, speakable words, variable slots, circuit, turns, replay, most used words.",
@@ -105,7 +105,7 @@ fn call(name: &str, args: &Value) -> Result<Value, String> {
             }
             let l = Learner::new();
             l.ensure()?;
-            l.talk(m)
+            l.talk_as(m, args["alone"].as_bool() == Some(true))
         }
         "hear" => {
             let t = args["text"].as_str().ok_or("text is a string")?;

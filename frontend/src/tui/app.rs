@@ -705,6 +705,15 @@ impl App {
             KeyCode::PageUp => self.talk.back += 5,
             KeyCode::PageDown => self.talk.back = self.talk.back.saturating_sub(5),
             KeyCode::Enter => self.say(),
+            KeyCode::F(2) => {
+                self.talk.alone = !self.talk.alone;
+                let m = if self.talk.alone {
+                    "the circuit alone: no word chosen by the engine, nothing learned (f2: taught again)"
+                } else {
+                    "taught: the engine chooses among its words, and it learns"
+                };
+                self.info(m);
+            }
             _ => {
                 edit(&mut self.talk.input, k);
             }
@@ -720,6 +729,7 @@ impl App {
             return self.fail("a job is running; say it when it is done");
         }
         self.talk.input.set_text("");
+        let alone = self.talk.alone;
         self.talk.back = 0;
         self.begin(Job::Talking, "the learner is answering");
         let client = self.client.clone();
@@ -735,7 +745,7 @@ impl App {
                 return Msg::Talked(Err(e));
             }
             let _ = tx.send(Msg::Phase("the learner is answering".into(), false));
-            Msg::Talked(learner.talk(&message))
+            Msg::Talked(learner.talk_as(&message, alone))
         });
     }
 

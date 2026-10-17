@@ -9,7 +9,7 @@ Intel Phi Jev's `mcp.rs`). Registered with Claude Code at user scope:
 | `screen` | the TUI's screen as text (`tmux capture-pane` of `MJEV2_PANE`, default `jev2.0`) |
 | `type` | text into the TUI (`send-keys -l`), `enter: true` to press Enter after it |
 | `keys` | tmux key names into the TUI |
-| `talk` | one turn through the learner's API, the record back; the TUI shows it too, since it reads the learner's `turns.jsonl` |
+| `talk` | one turn through the learner's API, the record back (`alone: true`: the circuit by itself); the TUI shows it too, since it reads the learner's `turns.jsonl` |
 | `hear` | English text for the learner to read |
 | `stats` | what the learner knows |
 | `judge` | a System One request straight to the decision engine |

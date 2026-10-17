@@ -89,7 +89,13 @@ impl Learner {
     /// One turn: the person's message in, the turn's record out (the reply,
     /// every word with its options and score, the measures).
     pub fn talk(&self, message: &str) -> Result<Value, String> {
-        self.post("/v1/talk", json!({ "message": message }))
+        self.talk_as(message, false)
+    }
+
+    /// `talk`, the circuit speaking by itself when `alone` (the engine still
+    /// perceives and judges, chooses no word; nothing is learned).
+    pub fn talk_as(&self, message: &str, alone: bool) -> Result<Value, String> {
+        self.post("/v1/talk", json!({ "message": message, "alone": alone }))
     }
 
     pub fn hear(&self, text: &str) -> Result<Value, String> {

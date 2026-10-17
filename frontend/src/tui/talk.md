@@ -26,3 +26,9 @@ turns of the learner's file. "Hello again! Do you want to talk about
 music?" was answered "Hello? Do" in 54 s, the reply growing on screen
 ("Hello", "Hello?", "Hello? Do"). The words and their scores were shown
 under it, and the screen started `learner serve` itself.
+
+F2 switches the next turns to the circuit alone: the API's `"alone": true`.
+The engine perceives (the variables) and judges (requirements, coherence),
+but chooses no word, and nothing is learned. Such turns are marked `solo`.
+First one, 2026-10-17: "Hello! Are you happy today?" got "Yes, hello."
+(every requirement passed, coherence 0.45, 3 s a word).
