@@ -22,7 +22,11 @@ One turn of conversation, every word a decision of the engine.
    - **Proposals.** The circuit proposes its best 8 allowed words: no
      punctuation first or doubled, no repeated word or trigram, the end
      only after `. ? !`.
-   - **Widening.** If the circuit's first word has probability under 0.25,
+   - **Widening.** Past one Choice's worth of words (24) the engine always
+     looks over the whole vocabulary too (in groups of 25, each with
+     `(not listed)`), and its 10 best join the circuit's 8: with the
+     circuit's 8 alone, "am" was missing after "Hello! I". (Was: if the
+     circuit's first word has probability under 0.25,
      it is unsure, and the engine picks up to 6 more from the lexicon (in
      groups of 25, each with `(not listed)`).
    - **The rerank.** The options are shuffled with a clock seed first: they

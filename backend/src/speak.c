@@ -15,7 +15,7 @@
 #define STOP_KEY "(stop: the reply is complete)"
 #define NOT_LISTED "(not listed)"
 #define HISTORY_TURNS 4
-#define WIDEN_ADD 6 /* words the engine adds from the lexicon when the circuit is unsure */
+#define WIDEN_ADD 10 /* words the engine adds from the lexicon past one Choice's worth */
 
 void speak_cfg_default(speak_cfg_t *c)
 {
@@ -25,7 +25,6 @@ void speak_cfg_default(speak_cfg_t *c)
     c->window = 8;
     c->group = 25;
     c->max_words = 60;
-    c->sure_p = 0.25;
     c->train_ms = 3000;
     c->learn = true;
     c->sampling = (sampling_t){
@@ -832,7 +831,11 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
             for (size_t i = 0; i < nr && nc < cfg->propose; i++)
                 cands[nc++] = ranked[i];
             own = nc;
-            if (!cfg->alone && (nc == 0 || p_first < cfg->sure_p)) {
+            /* Past one Choice's worth of words the engine always looks over the
+             * whole vocabulary too: with only the circuit's 8, the word a
+             * reply needed was missing ("am" after "Hello! I", measured
+             * 2026-10-17) and the engine chose among the wrong ones. */
+            if (!cfg->alone) {
                 int32_t wide[WIDEN_ADD];
                 size_t nw = widen(l, cfg, state, said, t, cands, nc, wide, WIDEN_ADD, &cost, err, errlen);
                 for (size_t i = 0; i < nw && nc < MAX_OPTS; i++)

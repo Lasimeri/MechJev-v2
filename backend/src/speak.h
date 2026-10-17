@@ -46,7 +46,6 @@ typedef struct {
     size_t window;      /* words of the reply shown in each option (8) */
     size_t group;       /* words per question when widening (25) */
     size_t max_words;   /* hard cap (60) */
-    double sure_p;      /* below this probability of its first word the circuit is unsure: widen */
     double train_ms;    /* rehearsal budget after a turn */
     char **checks;      /* requirements: a Noul each about the finished reply */
     size_t nchecks;
