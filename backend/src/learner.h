@@ -46,7 +46,7 @@ typedef struct {
     int32_t opt[MAX_OPTS]; /* the words shown */
     float q[MAX_OPTS];     /* the engine's probabilities over them, summing to 1 */
     int32_t top;           /* the engine's choice */
-    uint8_t failed;        /* its reply failed a requirement: kept, never learned from */
+    uint8_t failed;        /* its reply failed a requirement: teaches only the preference among the shown words */
     uint64_t id;
 } example_t;
 
@@ -103,7 +103,8 @@ void learner_inputs(const learner_t *l, const float *vars, int32_t prev, unsigne
  * and the softmax probability of the first (how sure it is). */
 size_t learner_propose(const learner_t *l, const uint8_t *bits, int32_t *out, size_t k,
                        bool allow_end, double *p_first);
-/* Learn a turn's examples (those not failed), then rehearse the replay
+/* Learn a turn's examples (a failed one only the engine's preference among the
+ * words shown, never that its word was right), then rehearse the replay
  * buffer for at most budget_ms. Returns the passes made. */
 size_t learner_learn(learner_t *l, const example_t *ex, size_t n, double budget_ms);
 /* Measure examples (prequentially: before learning them). */

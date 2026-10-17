@@ -262,7 +262,7 @@ static void say_turn(const char *reply, const json_t *rec)
             num(rec, "words"), jobj_get(rec, "length_planned")->s, num(rec, "lexicon"), num(rec, "speakable"),
             100 * num(ev, "agree"), 100 * num(nv, "agree"), 100 * num(np, "agree"),
             num(rec, "ms_per_word") / 1e3,
-            jobj_get(rec, "failed_requirement")->b ? "; failed a requirement: not learned from" : "");
+            jobj_get(rec, "failed_requirement")->b ? "; failed a requirement: learned only which shown word the engine preferred" : "");
 }
 
 static int cmd_export(ctx_t *c, int argc, char **argv)

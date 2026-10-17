@@ -319,22 +319,28 @@ static void train_one(learner_t *l, const example_t *ex, uint64_t seed, trace_t 
         z += expf(s_opt[k] - mx);
     for (int k = 0; k < ex->n; k++)
         gs[ex->opt[k]] += expf(s_opt[k] - mx) / z - ex->q[k];
-    /* the choice against the speakable lexicon */
-    float *sall = xmalloc((n ? n : 1) * sizeof *sall);
-    mx = -INFINITY;
-    for (size_t i = 0; i < n; i++)
-        if (lex_speakable(l, (int32_t)i) || (int32_t)i == ex->top) {
-            sall[i] = score_soft(&l->v[i], a);
-            mx = fmaxf(mx, sall[i]);
-        }
-    z = 0;
-    for (size_t i = 0; i < n; i++)
-        if (lex_speakable(l, (int32_t)i) || (int32_t)i == ex->top)
-            z += expf(sall[i] - mx);
-    for (size_t i = 0; i < n; i++)
-        if (lex_speakable(l, (int32_t)i) || (int32_t)i == ex->top)
-            gs[i] += CE_WEIGHT * (expf(sall[i] - mx) / z - ((int32_t)i == ex->top));
-    free(sall);
+    /* the choice against the speakable lexicon: only when its reply passed
+     * every requirement. A failed reply still teaches which of the shown
+     * words the engine preferred (the KL above), never that its word was good
+     * English: without this, a learner too young to pass "grammatical"
+     * could never begin (measured 2026-10-17: every early reply failed). */
+    if (!ex->failed) {
+        float *sall = xmalloc((n ? n : 1) * sizeof *sall);
+        mx = -INFINITY;
+        for (size_t i = 0; i < n; i++)
+            if (lex_speakable(l, (int32_t)i) || (int32_t)i == ex->top) {
+                sall[i] = score_soft(&l->v[i], a);
+                mx = fmaxf(mx, sall[i]);
+            }
+        z = 0;
+        for (size_t i = 0; i < n; i++)
+            if (lex_speakable(l, (int32_t)i) || (int32_t)i == ex->top)
+                z += expf(sall[i] - mx);
+        for (size_t i = 0; i < n; i++)
+            if (lex_speakable(l, (int32_t)i) || (int32_t)i == ex->top)
+                gs[i] += CE_WEIGHT * (expf(sall[i] - mx) / z - ((int32_t)i == ex->top));
+        free(sall);
+    }
     /* back through the scores: to the output bits and (straight through the
      * ternary rounding) to the embeddings */
     float *ga = t->grad[N_LAYERS];
@@ -380,21 +386,18 @@ size_t learner_learn(learner_t *l, const example_t *ex, size_t n, double budget_
     float *gs = xmalloc((l->n ? l->n : 1) * sizeof *gs), ge[OUT_BITS];
     for (size_t i = 0; i < n; i++)
         replay_push(l, &ex[i]);
-    size_t passes = 0, usable = 0;
-    /* the new examples once, in order: the last n of the buffer */
-    for (size_t i = l->nreplay - (n < l->nreplay ? n : l->nreplay); i < l->nreplay; i++)
-        if (!l->replay[i].failed) {
-            train_one(l, &l->replay[i], l->replay[i].id * 0x9E3779B97F4A7C15ull, &t, gw, gs, ge);
-            passes++;
-        }
-    for (size_t i = 0; i < l->nreplay; i++)
-        usable += !l->replay[i].failed;
+    size_t passes = 0;
+    /* the new examples once, in order: the last n of the buffer (a failed
+     * reply's examples teach only the engine's preference among the shown
+     * words: train_one) */
+    for (size_t i = l->nreplay - (n < l->nreplay ? n : l->nreplay); i < l->nreplay; i++) {
+        train_one(l, &l->replay[i], l->replay[i].id * 0x9E3779B97F4A7C15ull, &t, gw, gs, ge);
+        passes++;
+    }
     /* then rehearsal over everything kept, until the budget is spent */
     uint64_t s = l->seed ^ l->trained;
-    while (usable && now_ms() - t0 < budget_ms) {
+    while (l->nreplay && now_ms() - t0 < budget_ms) {
         const example_t *e = &l->replay[splitmix64(&s) % l->nreplay];
-        if (e->failed)
-            continue;
         train_one(l, e, e->id * 0x9E3779B97F4A7C15ull + splitmix64(&s), &t, gw, gs, ge);
         passes++;
     }

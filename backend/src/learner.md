@@ -35,7 +35,11 @@ choice.
   shown words, plus 0.5 times the cross-entropy of the engine's choice
   against every speakable word.
 - **When:** examples are learned only from replies that passed every
-  requirement. The rest are kept, marked failed, and never trained on.
+  requirement in full. A failed reply's examples teach only the KL term (which
+  shown word the engine preferred), never the cross-entropy that says the
+  chosen word was right: a hard gate deadlocked at birth (every early reply
+  failed "grammatical English", measured 2026-10-17, so nothing was ever
+  learned).
 - **Rehearsal:** after each turn, the replay buffer (20,000 at most) is
   rehearsed for a time budget (3 s).
 

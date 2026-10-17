@@ -11,7 +11,7 @@ SRC           := backend/src
 ENGINE_OBJS := $(B)/util.o $(B)/json.o $(B)/prompt.o $(B)/engine.o $(B)/judge.o \
                $(B)/http.o $(B)/conf.o $(B)/main.o
 
-.PHONY: all help build check serve stop clean
+.PHONY: all help build check serve stop talk stats clean
 
 all: build
 
@@ -41,6 +41,12 @@ check: $(B)/json_roundtrip $(B)/learner_test ## Checks that need no model: JSON 
 
 serve: build ## Start the engine detached on XKS_BIND (loads the subject)
 	$(B)/xks serve --detach
+
+talk: build ## Talk with the learner on this terminal (the engine must be up: make serve)
+	backend/build/learner talk
+
+stats: build ## What the learner knows
+	backend/build/learner stats
 
 stop: ## Stop a detached engine
 	$(B)/xks stop

@@ -31,7 +31,8 @@ One turn of conversation, every word a decision of the engine.
      over the shown words.
 4. **Requirements.** Each line of `restrictions.txt` is a Noul about the
    finished reply. One below 0.5, or an empty reply, fails it: the turn's
-   examples are kept but never learned from (Aster's judge).
+   examples teach only which shown word the engine preferred, never that
+   the word was right (Aster's judge, softened so a beginner can start).
 5. **Measure, then learn.** The circuit is measured on the turn's examples
    before learning them: with all inputs, with the variables blanked, with
    the previous word blanked. Then it learns, and the record goes to
