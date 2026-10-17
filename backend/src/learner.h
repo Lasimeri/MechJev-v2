@@ -18,7 +18,7 @@
 
 #include "circuit.h"
 
-#define LEARNER_VERSION 2u
+#define LEARNER_VERSION 3u
 #define VAR_SLOTS 64 /* variable inputs; unused slots read 0.5 */
 #define CODE_IN 32   /* bits of the previous word's code fed in */
 #define POS_BITS 8   /* position thermometer: 1 2 3 5 8 12 20 30 */
@@ -46,7 +46,9 @@ typedef struct {
     int32_t opt[MAX_OPTS]; /* the words shown */
     float q[MAX_OPTS];     /* the engine's probabilities over them, summing to 1 */
     int32_t top;           /* the engine's choice */
-    uint8_t failed;        /* its reply failed a requirement: teaches only the preference among the shown words */
+    int32_t said;          /* the word drawn and said (-1: none) */
+    float reward;          /* its per-token reward: the change in the engine's coherence of the reply (RED) */
+    uint8_t failed;        /* its reply failed a requirement (recorded; the reward carries the credit) */
     uint64_t id;
 } example_t;
 

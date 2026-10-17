@@ -18,6 +18,7 @@ static const int LAYERS[] = {256, 256, OUT_BITS};
 #define REPLAY_MAX 20000
 #define LR 0.01f       /* Adam, constant, as the paper trains */
 #define CE_WEIGHT 0.5f /* the engine's choice against the whole speakable lexicon */
+#define RL_WEIGHT 1.0f /* the per-token reward term (RED), against the KL term's 1 */
 #define TERN 0.33f     /* latent embedding to ternary: above +TERN 1, below -TERN -1 */
 
 static const unsigned POS_AT[POS_BITS] = {1, 2, 3, 5, 8, 12, 20, 30};
@@ -295,8 +296,8 @@ static void emb_adam(learner_t *l, lex_t *x, const float *g)
 
 /* One example, one gradient step. The loss: KL from the engine's
  * distribution over the shown words to the circuit's over the same words,
- * plus CE_WEIGHT x cross-entropy of the engine's choice against every
- * speakable word (so words never shown are pushed down too). */
+ * plus CE_WEIGHT x the engine's choice against every speakable word (replies
+ * that passed), plus RL_WEIGHT x the per-token reward on the word said (RED). */
 static void train_one(learner_t *l, const example_t *ex, uint64_t seed, trace_t *t, float **gw,
                       float *gs, float *ge)
 {
@@ -319,11 +320,11 @@ static void train_one(learner_t *l, const example_t *ex, uint64_t seed, trace_t 
         z += expf(s_opt[k] - mx);
     for (int k = 0; k < ex->n; k++)
         gs[ex->opt[k]] += expf(s_opt[k] - mx) / z - ex->q[k];
-    /* the choice against the speakable lexicon: only when its reply passed
-     * every requirement. A failed reply still teaches which of the shown
-     * words the engine preferred (the KL above), never that its word was good
-     * English: without this, a learner too young to pass "grammatical"
-     * could never begin (measured 2026-10-17: every early reply failed). */
+    /* The engine's choice against the whole speakable lexicon, when its reply
+     * passed every requirement: this is what pushes down words that were
+     * never shown. A failed reply teaches only the preference among the
+     * shown words (the KL above) and its per-token rewards (below), never
+     * that its word was right. */
     if (!ex->failed) {
         float *sall = xmalloc((n ? n : 1) * sizeof *sall);
         mx = -INFINITY;
@@ -340,6 +341,31 @@ static void train_one(learner_t *l, const example_t *ex, uint64_t seed, trace_t 
             if (lex_speakable(l, (int32_t)i) || (int32_t)i == ex->top)
                 gs[i] += CE_WEIGHT * (expf(sall[i] - mx) / z - ((int32_t)i == ex->top));
         free(sall);
+    }
+    /* The word said, credited by its per-token reward (RED, Li et al.,
+     * arXiv:2411.08302: r_t = R(y<=t) - R(y<=t-1), the engine's coherence of
+     * the reply after the word minus before it). The loss -r log p(said) over
+     * the words shown: a word that made the reply more coherent is
+     * pushed up, one that broke it pushed down. */
+    if (ex->said >= 0 && ex->reward != 0.0f) {
+        /* over the words shown, the alternatives the engine weighed: a
+         * negative reward moves probability to them, never to words nobody
+         * offered (over the whole lexicon it raised punctuation never shown:
+         * measured 2026-10-17, a reward-only toy fell to 0.275) */
+        float s_r[MAX_OPTS], mr = -INFINITY, zr = 0;
+        int said_at = -1;
+        for (int k = 0; k < ex->n; k++) {
+            s_r[k] = s_opt[k];
+            mr = fmaxf(mr, s_r[k]);
+            if (ex->opt[k] == ex->said)
+                said_at = k;
+        }
+        if (said_at >= 0) {
+            for (int k = 0; k < ex->n; k++)
+                zr += expf(s_r[k] - mr);
+            for (int k = 0; k < ex->n; k++)
+                gs[ex->opt[k]] += RL_WEIGHT * ex->reward * (expf(s_r[k] - mr) / zr - (k == said_at));
+        }
     }
     /* back through the scores: to the output bits and (straight through the
      * ternary rounding) to the embeddings */
@@ -496,7 +522,7 @@ int learner_save(const learner_t *l, const char *path, char *err, size_t errlen)
         W(e->prev), W(e->pos), W(e->n);
         fwrite(e->opt, sizeof e->opt, 1, f);
         fwrite(e->q, sizeof e->q, 1, f);
-        W(e->top), W(e->failed), W(e->id);
+        W(e->top), W(e->said), W(e->reward), W(e->failed), W(e->id);
     }
     int bad = ferror(f);
     if (fclose(f) || bad || rename(tmp.s, path)) {
@@ -535,9 +561,10 @@ int learner_load(const char *path, learner_t **out, char *err, size_t errlen)
         fclose(f);
         return -1;
     }
-    /* Another version or shape would be read with other wiring and other
-     * meanings for its inputs: refused, never converted. */
-    if (ver != LEARNER_VERSION || nin != N_IN || outb != OUT_BITS || slots != VAR_SLOTS) {
+    /* Another shape would be read with other wiring and other meanings for its
+     * inputs: refused, never converted. Version 2 is read as 3 with no
+     * rewards (the fields are additions; no meaning changed). */
+    if ((ver != LEARNER_VERSION && ver != 2) || nin != N_IN || outb != OUT_BITS || slots != VAR_SLOTS) {
         snprintf(err, errlen,
                  "%s: store version %u (%u inputs, %u outputs); this learner is version %u (%u, %u)",
                  path, ver, nin, outb, LEARNER_VERSION, (unsigned)N_IN, (unsigned)OUT_BITS);
@@ -582,8 +609,13 @@ int learner_load(const char *path, learner_t **out, char *err, size_t errlen)
         example_t e;
         memset(&e, 0, sizeof e);
         if (!R(e.vars) || !R(e.prev) || !R(e.pos) || !R(e.n) || !R(e.opt) || !R(e.q) || !R(e.top) ||
-            !R(e.failed) || !R(e.id))
+            (ver >= 3 && (!R(e.said) || !R(e.reward))) || !R(e.failed) || !R(e.id))
             goto bad;
+        if (ver < 3) { /* version 2 had no per-token reward: the said word is the
+                        * engine's choice, credited nothing */
+            e.said = e.top;
+            e.reward = 0;
+        }
         uint64_t keep = l->next_id;
         replay_push(l, &e);
         l->replay[l->nreplay - 1].id = e.id;

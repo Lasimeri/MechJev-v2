@@ -68,3 +68,42 @@ Measured (`backend/tests/learner_test.c`, 2026-10-17, no model):
   0.925; training bounded by time made that number vary from 0.800 to
   0.925 between runs, so tests now cap the passes instead.
 - **The store** reloads identical; version 1 is refused.
+
+## Per-token scoring (RED)
+
+The user, 2026-10-17: "implement a scoring per token solution/method ...
+in order for the model to gain coherency while learning". The method
+chosen (after an Exa search) is RED, Li et al., "Unleashing Token-Level
+Rewards from Holistic Feedback via Reward Redistribution",
+arXiv:2411.08302.
+- **Reward.** A word's reward is the change it makes in the reward
+  model's score of the prefix, r_t = R(x, y<=t) - R(x, y<=t-1).
+- **Properties.** The rewards add up to R(full) - R(empty), and this is
+  potential-based shaping (Ng et al. 1999), which keeps the optimal policy.
+- **Why not the others.** RED needs only a black-box judge. Grad2Reward
+  (judge gradients) and Dense Reward for Free (judge attention) would need
+  the 35B's internals, which the typed wire does not give and the project's
+  rule keeps out of the learner.
+
+Here:
+- **R** is the engine's coherence of the reply so far: a Score over 5
+  levels, normalized to [0, 1], asked in each word's request, plus once
+  after the last word.
+- **The term.** Each example records the word said and its reward. The
+  term is -r log p(said) over the words shown at that step: a negative
+  reward moves probability to the alternatives the engine weighed, never to
+  words nobody offered. Over the whole lexicon it raised punctuation never
+  shown; a reward-only toy fell to 0.275.
+- **Measured** (`backend/tests/learner_test.c`, 8 seeds). One context, in
+  which the engine weakly prefers the wrong word (0.4 against 0.3), and
+  every reply failed (no cross-entropy):
+  - with the KL alone, the right word is first among the shown on 0.200
+    (0.025 to 0.500);
+  - with the per-token reward added, on 0.887 (0.725 to 1.000).
+
+  The per-token score overrules a step's local preference when the word
+  makes the reply more coherent.
+
+The store is now version 3 (each example has the word said and its
+reward). A version 2 store is read with the said word set to the engine's
+choice and no reward.

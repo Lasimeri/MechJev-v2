@@ -405,6 +405,42 @@ static size_t sample_index(const double *p, const bool *repeated, size_t n, cons
     return pick;
 }
 
+/* ---- coherence, the reward model of the per-token scoring ------------ */
+
+/* The engine's coherence of the reply so far: a Score over five levels,
+ * normalized to [0, 1]. It is R(x, y<=t) of RED (Li et al., "Unleashing
+ * Token-Level Rewards from Holistic Feedback via Reward Redistribution",
+ * arXiv:2411.08302): each word's reward is the change it makes. */
+static const char *COHERENCE[] = {"no reply yet, or no sense at all", "words without a sense",
+                                  "partly makes sense", "makes sense so far",
+                                  "clear, correct and on topic"};
+
+static json_t *coherence_q(const char *so_far)
+{
+    sb_t ins;
+    sb_init(&ins);
+    sb_puts(&ins, "The reply so far is ");
+    json_quote(&ins, so_far, strlen(so_far));
+    sb_puts(&ins, ". How coherent is it, as the beginning of an English reply to what the person said "
+                  "last?");
+    json_t *q = jobj();
+    jobj_set(q, "type", jstr("score"));
+    jobj_set(q, "instructions", jstr(ins.s));
+    sb_free(&ins);
+    json_t *lv = jarr();
+    for (size_t i = 0; i < sizeof COHERENCE / sizeof *COHERENCE; i++)
+        jarr_push(lv, jstr(COHERENCE[i]));
+    jobj_set(q, "criteria", lv);
+    return q;
+}
+
+static double coherence_of(const json_t *ans)
+{
+    const json_t *s = jobj_get(jobj_get(ans, "coherence"), "score");
+    double levels = (double)(sizeof COHERENCE / sizeof *COHERENCE) - 1;
+    return s && s->t == J_NUM ? s->f / levels : 0;
+}
+
 /* ---- one word -------------------------------------------------------- */
 
 static bool repeats(char **said, size_t t, const char *w)
@@ -463,6 +499,7 @@ typedef struct {
     int32_t opt[MAX_OPTS];
     float q[MAX_OPTS];
     json_t *shown; /* option text -> probability */
+    double coh;    /* the engine's coherence of the reply so far, before this word */
 } step_t;
 
 /* The rerank: one Choice over the candidates as continuations of the
@@ -505,6 +542,7 @@ static int rerank(learner_t *l, const speak_cfg_t *cfg, const char *state, char 
     jobj_set(qs, "next", choice_q(ins.s, keys, no));
     sb_free(&ins);
     vars_questions(cfg, true, so_far, qs);
+    jobj_set(qs, "coherence", coherence_q(so_far));
     free(so_far);
     json_t *resp = NULL;
     json_t *ans = ask(cfg, state, qs, &resp, cost, err, errlen);
@@ -539,6 +577,7 @@ static int rerank(learner_t *l, const speak_cfg_t *cfg, const char *state, char 
                 jobj_set(st->shown, keys[i], jf64(p[i]));
             }
             vars_read(cfg, true, ans, slots, seen);
+            st->coh = coherence_of(ans);
             rc = 0;
         }
         free(p);
@@ -552,24 +591,26 @@ static int rerank(learner_t *l, const speak_cfg_t *cfg, const char *state, char 
     return rc;
 }
 
-/* Only the step variables about the reply so far (the circuit speaking
- * alone still has the engine's perception of what it has said). */
-static int ask_step_vars(const speak_cfg_t *cfg, const char *state, char **said, size_t t, float *slots,
-                         json_t *seen, cost_t *cost, char *err, size_t errlen)
+/* The engine's perception of the reply so far without a word choice: the
+ * step variables (into slots, when given) and its coherence. Used when the
+ * circuit speaks alone, and once after the last word for the reply's final
+ * coherence (the last term of the per-token rewards). */
+static int ask_reply_state(const speak_cfg_t *cfg, const char *state, char **said, size_t t, float *slots,
+                           json_t *seen, double *coh, cost_t *cost, char *err, size_t errlen)
 {
     json_t *qs = jobj();
     char *so_far = render_words(said, t);
-    vars_questions(cfg, true, so_far, qs);
+    if (slots)
+        vars_questions(cfg, true, so_far, qs);
+    jobj_set(qs, "coherence", coherence_q(so_far));
     free(so_far);
-    if (!qs->n) {
-        json_free(qs);
-        return 0;
-    }
     json_t *resp = NULL;
     json_t *ans = ask(cfg, state, qs, &resp, cost, err, errlen);
     if (!ans)
         return -1;
-    vars_read(cfg, true, ans, slots, seen);
+    if (slots)
+        vars_read(cfg, true, ans, slots, seen);
+    *coh = coherence_of(ans);
     json_free(resp);
     return 0;
 }
@@ -722,6 +763,8 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
 
     char **said = xcalloc(cap + 1, sizeof *said);
     example_t *ex = xcalloc(cap + 1, sizeof *ex);
+    double *coh = xcalloc(cap + 2, sizeof *coh); /* coh[k]: the coherence of the first k words */
+    bool *have = xcalloc(cap + 2, sizeof *have);
     size_t t = 0, nex = 0, widened = 0;
     json_t *trace = jarr();
     bool ended = false;
@@ -779,11 +822,12 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
         if (cfg->alone) {
             /* The circuit alone: its own first word, no engine choice. The
              * engine still perceives the reply so far (the step variables). */
-            if (ask_step_vars(cfg, state, said, t, slots, step_vars, &cost, err, errlen)) {
+            if (ask_reply_state(cfg, state, said, t, slots, step_vars, &coh[t], &cost, err, errlen)) {
                 json_free(step);
                 json_free(step_vars);
                 goto fail;
             }
+            have[t] = true;
             said_word = top1;
             jobj_set(step, "pick", jstr(l->v[said_word].word));
             jobj_set(step, "from", jstr("circuit alone"));
@@ -811,6 +855,9 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
             l->v[st.top].picked++;
             l->steps++;
             said_word = st.pick;
+            e->said = st.pick;
+            coh[t] = st.coh;
+            have[t] = true;
             jobj_set(step, "seed_draw", ju64(st.seed));
             jobj_set(step, "pick", jstr(l->v[st.pick].word));
             jobj_set(step, "engine_top", jstr(l->v[st.top].word));
@@ -833,6 +880,30 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
             cfg->on_word(cfg->on_word_ud, so_far);
             free(so_far);
         }
+    }
+    /* The reply's final coherence, unless the step that ended it asked
+     * already, then each word's reward: the change it made (RED). */
+    if (t && !have[t]) {
+        if (ask_reply_state(cfg, state, said, t, NULL, NULL, &coh[t], &cost, err, errlen))
+            goto fail;
+        have[t] = true;
+    }
+    double reward_sum = 0;
+    for (size_t k = 0; k < nex; k++) {
+        size_t at = ex[k].pos;
+        bool word = ex[k].said >= 0 && strcmp(l->v[ex[k].said].word, END) && at + 1 <= t && have[at] && have[at + 1];
+        ex[k].reward = word ? (float)(coh[at + 1] - coh[at]) : 0.0f;
+        reward_sum += ex[k].reward;
+    }
+    for (size_t k = 0; k < trace->n; k++) {
+        json_t *st = trace->items[k];
+        const json_t *tt = jobj_get(st, "t");
+        size_t at = tt && tt->t == J_NUM ? (size_t)tt->u : 0;
+        if (have[at])
+            jobj_set(st, "coherence_before", jf64(round(coh[at] * 1e4) / 1e4));
+        for (size_t j = 0; j < nex; j++)
+            if (ex[j].pos == at)
+                jobj_set(st, "reward", jf64(round(ex[j].reward * 1e4) / 1e4));
     }
     *reply = render_words(said, t);
 
@@ -904,6 +975,8 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     jobj_set(rec, "ended", jbool(ended));
     jobj_set(rec, "steps", ju64(nex));
     jobj_set(rec, "widened", ju64(widened));
+    jobj_set(rec, "coherence_final", t && have[t] ? jf64(round(coh[t] * 1e4) / 1e4) : jnull());
+    jobj_set(rec, "reward_sum", jf64(round(reward_sum * 1e4) / 1e4));
     jobj_set(rec, "eval", eval_json(full));
     jobj_set(rec, "eval_no_variables", eval_json(no_vars));
     jobj_set(rec, "eval_no_prev_word", eval_json(no_prev));
@@ -922,6 +995,8 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     history_add(h, person, *reply);
     free(said);
     free(ex);
+    free(coh);
+    free(have);
     free(state);
     return 0;
 fail:
@@ -929,6 +1004,8 @@ fail:
     json_free(turn_vars);
     free(said);
     free(ex);
+    free(coh);
+    free(have);
     free(state);
     return -1;
 }

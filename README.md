@@ -120,10 +120,15 @@ variables win:
      settings above.
    - **The example.** The engine's own choice, with its distribution, is
      the example the circuit learns from.
-4. **Judge.** Each line of `restrictions.txt` is a requirement the engine
+4. **Score each word.** The engine scores the coherence of the reply after
+   every word; a word's reward is the change it made (RED, arXiv:2411.08302),
+   so a word that makes the reply read better is reinforced even where the
+   engine's choice at that step was weak, and one that breaks it is pushed
+   down.
+5. **Judge.** Each line of `restrictions.txt` is a requirement the engine
    judges about the finished reply. A reply that fails one teaches only
    which shown word the engine preferred, never that its word was right.
-5. **Learn.** The circuit is measured on the turn's words before learning
+6. **Learn.** The circuit is measured on the turn's words before learning
    them: with every input, with the variables blanked, and with the word
    before blanked. If blanking the variables cost nothing, the circuit
    would be a chain over words. Then it learns and rehearses.
@@ -144,6 +149,7 @@ Every number comes with the command or file that produced it.
 | grounding toy: the right word depends on one variable only (60 examples, 8 seeds, 6,000 passes each; mean, min to max) | held-out agreement 0.912 (0.825 to 0.950); with the variable blanked 0.553 (0.525 to 0.575, chance 0.5); with the word before blanked 0.881 (0.725 to 0.950). One seed trained twice: identical circuits | `backend/tests/learner_test.c` |
 | relaxed against discrete circuit | the same word on 0.981 of held-out inputs (0.900 to 1.000 over the 8 seeds) | `backend/tests/learner_test.c` |
 | the exported C circuit, compiled | identical to the interpreter on 200 inputs | `backend/tests/learner_test.c` |
+| per-token scoring (RED): one context, the engine weakly preferring the wrong word (0.4 to 0.3), 8 seeds | the right word first among the shown: 0.200 (0.025 to 0.500) with the KL alone, 0.887 (0.725 to 1.000) with the per-token reward | `backend/tests/learner_test.c` |
 | a word of a reply, live (35B at 50% on the GPU) | 5 to 12 s a step, 15 s a word on average (the third turn of the first conversation) | `turns.jsonl` |
 
 The live learner is at its very beginning. Its first replies were

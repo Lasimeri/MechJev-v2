@@ -43,7 +43,10 @@ One turn of conversation, every word a decision of the engine.
    finished reply. One below 0.5, or an empty reply, fails it: the turn's
    examples teach only which shown word the engine preferred, never that
    the word was right (Aster's judge, softened so a beginner can start).
-5. **Measure, then learn.** The circuit is measured on the turn's examples
+5. **Per-token scores.** Each word's reward is the change in the engine's
+   coherence of the reply (a Score asked with every word, and once after
+   the last): RED, learner.md.
+6. **Measure, then learn.** The circuit is measured on the turn's examples
    before learning them: with all inputs, with the variables blanked, with
    the previous word blanked. Then it learns, and the record goes to
    `curves.jsonl` and `turns.jsonl`.

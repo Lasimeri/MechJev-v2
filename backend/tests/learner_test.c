@@ -78,6 +78,30 @@ static double mean(const double *x, int n)
     return s / n;
 }
 
+
+/* The share of examples whose right word the circuit ranks first among
+ * the words shown (the decision the per-token reward is about). */
+static double shown_agree(learner_t *l, const example_t *ex, int n)
+{
+    int ok = 0;
+    int32_t *rank = xmalloc((l->n ? l->n : 1) * sizeof *rank);
+    for (int i = 0; i < n; i++) {
+        uint8_t bits[N_IN];
+        learner_inputs(l, ex[i].vars, ex[i].prev, ex[i].pos, ex[i].id * 0x9E3779B97F4A7C15ull, ABL_NONE, bits);
+        size_t m = learner_propose(l, bits, rank, l->n, true, NULL);
+        for (size_t r = 0; r < m; r++) {
+            bool shown = false;
+            for (int k = 0; k < ex[i].n; k++)
+                shown |= ex[i].opt[k] == rank[r];
+            if (shown) {
+                ok += rank[r] == ex[i].top;
+                break;
+            }
+        }
+    }
+    free(rank);
+    return (double)ok / n;
+}
 static void spread(const char *what, const double *x, int n)
 {
     double lo = x[0], hi = x[0];
@@ -134,6 +158,40 @@ int main(void)
     CHECK(mean(ag, SEEDS) >= 0.85, "the toy was not learned: mean %.3f", mean(ag, SEEDS));
     CHECK(mean(bl, SEEDS) <= 0.65, "blanking the variable should undo it: mean %.3f", mean(bl, SEEDS));
     CHECK(mean(gp, SEEDS) >= 0.85, "relaxed and discrete circuits disagree: mean %.3f", mean(gp, SEEDS));
+    /* 2b. what the per-token reward (RED) adds: it can overrule the engine's
+     * local preference when the words it led to read better. One context
+     * (the person greeted); the engine weakly prefers the wrong word at the
+     * step (0.4 against 0.3 and 0.3), every reply failed (no cross-entropy);
+     * the word said alternates; A: no rewards, the KL alone; B: the word said
+     * credited +0.5 when right, -0.5 when wrong. Measured as the right word
+     * ranked first among the words shown: A should not, B should. */
+    {
+        double ka[SEEDS], kb[SEEDS];
+        for (int arm = 0; arm < 2; arm++)
+            for (int s = 0; s < SEEDS; s++) {
+                learner_t *x = toy_learner(200 + (uint64_t)s);
+                example_t tr[80], hd[40];
+                int32_t hello = lex_find(x, "hello"), fine = lex_find(x, "fine");
+                for (int i = 0; i < 80; i++) {
+                    tr[i] = toy(x, 0.95f, 2000 + (uint64_t)i); /* right: hello */
+                    for (int k = 0; k < tr[i].n; k++)
+                        tr[i].q[k] = tr[i].opt[k] == fine ? 0.4f : 0.3f;
+                    tr[i].failed = 1;
+                    tr[i].said = i % 2 ? hello : fine;
+                    tr[i].reward = arm == 0 ? 0.0f : tr[i].said == hello ? 0.5f : -0.5f;
+                }
+                for (int i = 0; i < 40; i++)
+                    hd[i] = toy(x, 0.95f, 6000 + (uint64_t)i);
+                learner_learn(x, tr, 80, 1e9, PASSES);
+                (arm ? kb : ka)[s] = shown_agree(x, hd, 40);
+                learner_free(x);
+            }
+        printf("per-token reward against a weak contrary engine preference (hello first among the shown):\n");
+        spread("  A: KL alone              ", ka, SEEDS);
+        spread("  B: KL + per-token reward ", kb, SEEDS);
+        CHECK(mean(ka, SEEDS) <= 0.25, "A should follow the engine's preference for fine: %.3f", mean(ka, SEEDS));
+        CHECK(mean(kb, SEEDS) >= 0.75, "B: the per-token reward did not overrule it: %.3f", mean(kb, SEEDS));
+    }
     {
         learner_t *x = toy_learner(100), *y = toy_learner(100);
         example_t tx[60], hx[40], ty[60], hy[40];
