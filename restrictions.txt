@@ -4,8 +4,14 @@
 # "The reply is grammatical English." was here: it passed caveman fragments
 # ("Know who that is." 0.611); the grammar is judged in speak.c instead, two
 # plain statements combined (speak.md). MJ2_GRAMMAR=0 turns it off.
+# "Does not repeat itself" failed a right answer said again across turns
+# ("MechJev." to "What is your name?" a second time, 0.44) while it judged
+# loops within a reply as this does; asked "within itself" (2026-10-18, the
+# live framing, ~/.cache/mechjev-v2-repeat-check.txt): 0.92 and 0.78 on the
+# name said again, 0.02, 0.01 and 0.03 on "Hello hello hello hello.",
+# "I am I am I am fine." and a salad.
 The reply responds to what the person said.
-The reply does not repeat itself.
+The reply does not repeat a word or a phrase within itself.
 # Opinions apart from experiences and facts (the user's ask, 2026-10-17)
 # is judged in speak.c, not here: one statement such as "The reply claims
 # no experience it could not have had and no fact it was not told" passed
