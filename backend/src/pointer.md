@@ -40,7 +40,7 @@ first ("Zin it!"). The circuit's 128 bits are not in the gate: fitted on 87
 turns they took over and made it copy where it should not; nor is the
 circuit's confidence (both measured below).
 
-The decision is outright (`pt_choose`): under 0.5 the attended word is
+The decision is outright (`pt_choose`): under 0.2 (`PT_GATE_OPEN`) the attended word is
 MechJev's word, unless it is a mark or a word heard 10 times or more: those
 the circuit says itself, and copying them made parrots live ("Thank you!"
 answered "You!", both words the pointer's). Else the circuit's word. A soft
@@ -137,3 +137,14 @@ Live probes before it, 8 lines twice (`~/.cache/mechjev-v2-ptr-live3/`):
 the pointer named nothing on the 24 fixed probes; it parroted unknown
 words at the first word ("Do you know the Zin?" -> "Zin!", where the 9
 passed unknown turns all said "What ...?" first).
+
+**The threshold** (2026-10-18, in the ladder). At 0.5, the first checks of
+the name-tell stage copied rare words of lines the gate had not learned:
+"Good job, MechJev. You are MechJev!" -> "Job are you." (gate 0.26), "I
+call you MechJev. That is your name!" -> "Call!" (0.21); unknown words
+before ("Zin!" 0.30, "Quorbel" 0.47). The right copies came at 0.05 to
+0.17 ("Hot!" 0.08, "White." 0.06 in the ladder; "Round!", "Small!",
+"Red!", "Big!" 0.05 to 0.17 in probes). At 0.2, held out
+(`~/.cache/mechjev-v2-pointer-loo4.txt`): the person's word right 65 of
+122 against the circuit's 61, told 7 against 4, unknown 12 against 10,
+no other step lost.

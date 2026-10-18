@@ -24,6 +24,11 @@
 #define PT_F 10     /* features a token */
 #define PT_MAXT 24  /* tokens of a line attended over */
 #define PT_SLOTS 64 /* the meaning slots (learner.h VAR_SLOTS) */
+/* The gate opens under this. 0.5 copied rare words of lines the gate had
+ * not learned ("Good job, MechJev." -> "Job are you.", gate 0.26; "Call!",
+ * 0.21) while the right copies came at 0.05 to 0.17; held out, 0.2 costs 1
+ * copy of 122 and no other step (pointer.md). */
+#define PT_GATE_OPEN 0.2f
 
 typedef struct {
     float V[PT_BITS][PT_F], W0[PT_F]; /* the attention: query h = V^T a' + W0, score = h . f */
@@ -58,7 +63,7 @@ float pt_forward(const pointer_t *p, const uint8_t *a, const float *slots, const
 int32_t pt_attended(const pt_line_t *pl, const float *att);
 
 /* The word the pointer says, -1 for the circuit's: the gate open (under
- * 0.5) and the attention on a word of the line that is neither a mark nor
+ * PT_GATE_OPEN) and the attention on a word of the line that is neither a mark nor
  * often heard. Those the circuit says itself; copying them made parrots
  * ("Thank you!" -> "You!"; measured: pointer.md). */
 int32_t pt_choose(const pt_line_t *pl, const float *att, float gate);

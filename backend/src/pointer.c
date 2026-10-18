@@ -125,7 +125,7 @@ int32_t pt_attended(const pt_line_t *pl, const float *att)
 
 int32_t pt_choose(const pt_line_t *pl, const float *att, float gate)
 {
-    if (gate >= 0.5f)
+    if (gate >= PT_GATE_OPEN)
         return -1;
     int best = -1;
     for (int j = 0; j < pl->n; j++)
