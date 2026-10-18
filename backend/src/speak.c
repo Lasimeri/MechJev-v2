@@ -1422,6 +1422,50 @@ static void gen_free(gen_t *g)
     memset(g, 0, sizeof *g);
 }
 
+/* The first word of pool (in its own order) the engine finds coherent
+ * enough to say next (viability_q, at COHERENCE_FLOOR): its index, -1 if
+ * none is, -2 if the engine did not answer. Each word and its coherence go
+ * onto vj, labelled src. The engine only says yes or no to a word; the
+ * order is the pool's. */
+static int first_coherent(const learner_t *l, const speak_cfg_t *cfg, const char *state, char **said, size_t t,
+                          const int32_t *pool, size_t np, const char *src, json_t *vj, cost_t *cost, char *err,
+                          size_t errlen)
+{
+    if (!np)
+        return -1;
+    char **w = xmalloc((t + 2) * sizeof *w);
+    for (size_t j = 0; j < t; j++)
+        w[j] = said[j];
+    json_t *q = jobj();
+    for (size_t i = 0; i < np; i++) {
+        w[t] = l->v[pool[i]].word;
+        char *text = render_words(l, w, t + 1), id[16];
+        snprintf(id, sizeof id, "c%zu", i);
+        jobj_set(q, id, viability_q(text, cfg->extra_check));
+        free(text);
+    }
+    free(w);
+    json_t *resp = NULL;
+    json_t *ans = ask(cfg, state, q, &resp, cost, err, errlen);
+    if (!ans)
+        return -2;
+    int chosen = -1;
+    for (size_t i = 0; i < np; i++) {
+        char id[16];
+        snprintf(id, sizeof id, "c%zu", i);
+        double v = level_of(jobj_get(ans, id), sizeof VIABILITY / sizeof *VIABILITY);
+        json_t *o = jobj();
+        jobj_set(o, "word", jstr(l->v[pool[i]].word));
+        jobj_set(o, "from", jstr(src));
+        jobj_set(o, "coherence", jf64(round(v * 1e4) / 1e4));
+        jarr_push(vj, o);
+        if (chosen < 0 && v >= COHERENCE_FLOOR)
+            chosen = (int)i;
+    }
+    json_free(resp);
+    return chosen;
+}
+
 /* One reply by MechJev's gates. At each word: the plan's, else the
  * pointer's when its gate opens (pt_choose), else the n-gram's when its
  * meaning gate is NG_GATE_ON open and the word is among the circuit's
@@ -1431,7 +1475,8 @@ static void gen_free(gen_t *g)
  * variables) and chooses nothing. Each word becomes an example; whether it
  * is learned is the judgment's (gated_tries). */
 static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *state, const float *slots0, size_t room,
-                          size_t cap, size_t li, char **heard, size_t nh, const pt_line_t *pl, plan_t plan, gen_t *g,
+                          size_t cap, size_t li, char **heard, size_t nh, char **show_w, size_t ns_show,
+                          const pt_line_t *pl, plan_t plan, gen_t *g,
                           cost_t *cost, char *err, size_t errlen)
 {
     float slots[VAR_SLOTS];
@@ -1613,43 +1658,50 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
                         used_tok[best] = true;
                         line[nl++] = pl->tok[best];
                     }
-                    char **w3 = xmalloc((t + 2) * sizeof *w3);
-                    for (size_t j = 0; j < t; j++)
-                        w3[j] = g->said[j];
-                    json_t *lq = jobj();
-                    for (size_t i = 0; i < nl; i++) {
-                        w3[t] = l->v[line[i]].word;
-                        char *text = render_words(l, w3, t + 1), id[16];
-                        snprintf(id, sizeof id, "l%zu", i);
-                        jobj_set(lq, id, viability_q(text, cfg->extra_check));
-                        free(text);
-                    }
-                    free(w3);
-                    json_t *lresp = NULL;
-                    json_t *lans = nl ? ask(cfg, state, lq, &lresp, cost, err, errlen) : NULL;
-                    if (nl && !lans) {
+                    int c2 = first_coherent(l, cfg, state, g->said, t, line, nl, "line", vj, cost, err, errlen);
+                    if (c2 == -2) {
                         json_free(vj);
                         json_free(step);
                         return -1;
                     }
-                    if (!nl)
-                        json_free(lq);
-                    for (size_t i = 0; i < nl; i++) {
-                        char id[16];
-                        snprintf(id, sizeof id, "l%zu", i);
-                        double v = level_of(jobj_get(lans, id), sizeof VIABILITY / sizeof *VIABILITY);
-                        json_t *o = jobj();
-                        jobj_set(o, "word", jstr(l->v[line[i]].word));
-                        jobj_set(o, "from", jstr("line"));
-                        jobj_set(o, "coherence", jf64(round(v * 1e4) / 1e4));
-                        jarr_push(vj, o);
-                        if (!chosen && v >= COHERENCE_FLOOR) {
-                            chosen = true;
-                            word = line[i], from = "line";
-                            jobj_set(step, "vetoed", ju64(no + i));
-                        }
+                    if (c2 >= 0) {
+                        chosen = true;
+                        word = line[c2], from = "line";
+                        jobj_set(step, "vetoed", ju64(no + (size_t)c2));
                     }
-                    json_free(lresp);
+                }
+                /* Then, in a taught turn, the teacher's own words (`show`), in
+                 * the order it gave them: a reply of words MechJev never said
+                 * can come only so ("My day was good." for the day stage,
+                 * where the gates and the line offered "What day?" and "My."
+                 * and every try was rejected), as a child repeats what it was
+                 * shown, word by word, while the parent nods. */
+                if (!chosen && show_w && ns_show) {
+                    int32_t shown[2 * VETO_AMONG];
+                    size_t nsw = 0;
+                    for (size_t i = 0; i < ns_show && nsw < 2 * VETO_AMONG; i++) {
+                        int32_t w = lex_find(l, show_w[i]);
+                        if (w < 0 || w == start || w == end || is_punct(show_w[i]) || !allowed(l, g->said, t, w))
+                            continue;
+                        bool dup = false;
+                        for (size_t j = 0; j < no; j++)
+                            dup |= order[j] == w;
+                        for (size_t j = 0; j < nsw; j++)
+                            dup |= shown[j] == w;
+                        if (!dup)
+                            shown[nsw++] = w;
+                    }
+                    int c3 = first_coherent(l, cfg, state, g->said, t, shown, nsw, "shown", vj, cost, err, errlen);
+                    if (c3 == -2) {
+                        json_free(vj);
+                        json_free(step);
+                        return -1;
+                    }
+                    if (c3 >= 0) {
+                        chosen = true;
+                        word = shown[c3], from = "shown";
+                        jobj_set(step, "vetoed", ju64(no + (size_t)c3));
+                    }
                 }
                 /* Nothing any gate offered is coherent: it says it does not
                  * know, never the gates' first anyway (the user, 2026-10-18:
@@ -1789,7 +1841,8 @@ static int gated_tries(learner_t *l, const speak_cfg_t *cfg, const char *state, 
                 break;
         }
         gen_init(&g[ng], room);
-        if (gated_generate(l, cfg, state, slots0, room, cap, li, heard, nh, pl, plan, &g[ng], cost, err, errlen)) {
+        if (gated_generate(l, cfg, state, slots0, room, cap, li, heard, nh, cfg->alone ? NULL : show_w,
+                           cfg->alone ? 0 : ns_show, pl, plan, &g[ng], cost, err, errlen)) {
             for (int r = 0; r <= ng; r++)
                 gen_free(&g[r]);
             for (int r = 0; r < ng; r++)
