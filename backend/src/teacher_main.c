@@ -26,6 +26,7 @@
 #define RECENT_LINES 8   /* the teacher's own lines it is shown, so it does not loop */
 #define REWRITES 4       /* a line that is a test line or a repeat is written again */
 #define NEAR 0.75        /* a line sharing this share of its words with one said is a near-repeat (teach.h) */
+#define LINE_FIT_MIN 0.8 /* a line fits its stage from here (teacher_line_fits: fitting .93-.98, drifted .54-.68) */
 
 typedef struct {
     teacher_t t;
@@ -294,6 +295,8 @@ static int next_line(teach_ctx_t *c, const lesson_t *l, const char *goal, const 
         sb_printf(&ctx, "%s%s", ctx.n ? "\n\n" : "", recent);
     *line = NULL;
     char *near = NULL; /* the last near-repeat: said only when every rewrite was one */
+    char *best = NULL; /* the best-fitting new line that did not fit, said when nothing better comes */
+    double best_fit = -1;
     for (int k = 0; k < REWRITES; k++) {
         free(*line);
         *line = NULL;
@@ -317,10 +320,37 @@ static int next_line(teach_ctx_t *c, const lesson_t *l, const char *goal, const 
             }
         }
         if (!again && most < NEAR) {
-            free(near);
-            jarr_push(avoid, jstr(*line));
-            sb_free(&ctx);
-            return 0;
+            /* new: does it do what the stage asks? (Qwen drifted: "The sun is
+             * hot. Is the moon cold?" for a stage that asks back the fact) */
+            double fit = 0;
+            if (teacher_line_fits(&c->t, goal, *line, &fit, err, errlen)) {
+                free(near);
+                free(best);
+                sb_free(&ctx);
+                return -1;
+            }
+            if (fit >= LINE_FIT_MIN) {
+                free(near);
+                free(best);
+                jarr_push(avoid, jstr(*line));
+                sb_free(&ctx);
+                return 0;
+            }
+            if (fit > best_fit) { /* the best of the lines that do not fit, said if none does */
+                free(best);
+                best = xstrdup(*line);
+                best_fit = fit;
+            }
+            if (refused) {
+                json_t *x = jobj();
+                jobj_set(x, "line", jstr(*line));
+                jobj_set(x, "why", jstr("does not do what the stage asks"));
+                jobj_set(x, "fit", jf64(round(fit * 1e4) / 1e4));
+                jarr_push(refused, x);
+            }
+            sb_printf(&ctx, "%sNot \"%s\": it does not do what your line should do: %s", ctx.n ? "\n\n" : "",
+                      *line, goal);
+            continue;
         }
         if (refused) { /* for the row: what Qwen wrote and why it was not said */
             json_t *x = jobj();
@@ -340,6 +370,13 @@ static int next_line(teach_ctx_t *c, const lesson_t *l, const char *goal, const 
         }
     }
     sb_free(&ctx);
+    if (best) { /* nothing that fits: the new line that came closest, not a failed turn */
+        free(near);
+        free(*line);
+        *line = best;
+        jarr_push(avoid, jstr(*line));
+        return 0;
+    }
     if (near) { /* nothing new but near-repeats: the last of them, not a failed turn */
         free(*line);
         *line = near;

@@ -521,3 +521,29 @@ out:
     close(lk);
     return rc;
 }
+
+int teacher_line_fits(const teacher_t *t, const char *goal, const char *line, double *p, char *err, size_t errlen)
+{
+    sb_t st;
+    sb_init(&st);
+    sb_puts(&st, "A teacher talks with MechJev, a beginner learning English. The teacher's next line: ");
+    json_quote(&st, line, strlen(line));
+    sb_t ins;
+    sb_init(&ins);
+    sb_printf(&ins, "The teacher's line does exactly what this asks: %s", goal);
+    json_t *q = jobj();
+    jobj_set(q, "type", jstr("noul"));
+    jobj_set(q, "instructions", jstr(ins.s));
+    sb_free(&ins);
+    json_t *resp = NULL;
+    const json_t *a = decide(t, st.s, "fits", q, &resp, err, errlen);
+    sb_free(&st);
+    if (!a) {
+        json_free(resp);
+        return -1;
+    }
+    const json_t *v = jobj_get(a, "noul");
+    *p = v && v->t == J_NUM ? v->f : 0;
+    json_free(resp);
+    return 0;
+}

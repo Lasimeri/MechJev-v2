@@ -76,6 +76,12 @@ int teacher_say_in_tui(const teacher_t *t, const char *line, bool alone, const c
                        json_t **rec, char *err,
                        size_t errlen);
 
+/* The probability that Qwen's line does what the stage asks (`goal`): a line
+ * that does not is written again (teacher_main.c next_line); Qwen's lines
+ * had drifted, "The sun is hot. Is the moon cold?" for a stage that asks back
+ * the very fact told. */
+int teacher_line_fits(const teacher_t *t, const char *goal, const char *line, double *p, char *err, size_t errlen);
+
 /* Two lines the same but for marks, spaces and case. */
 bool teacher_same_text(const char *a, const char *b);
 
