@@ -86,7 +86,7 @@ void history_free(history_t *h);
 
 /* English text from words: a space between words, none before
  * punctuation, capitals at a sentence start and for I. */
-char *render_words(char **w, size_t n);
+char *render_words(const learner_t *l, char **w, size_t n);
 
 /* Shared with the teacher (teach.c): one request to the engine (the
  * answers object, owned by *resp), a Choice question, an option's
@@ -119,6 +119,9 @@ int speak_memory_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns
  * nothing of it is stored. */
 int speak_ngram_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns_path, size_t *turns,
                         size_t *steps, char *err, size_t errlen);
+/* How each word is written, made again from the person's lines in
+ * turns.jsonl (learner_hear_casing): at every start, nothing stored. */
+int speak_casing_rebuild(learner_t *l, const char *turns_path, size_t *lines, char *err, size_t errlen);
 /* The pointer's past (pointer.h): each passed taught turn's line, with the
  * hearings replayed as the turns made them, and each learned word's circuit
  * output (as the circuit is now). */

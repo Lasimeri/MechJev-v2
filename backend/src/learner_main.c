@@ -272,6 +272,10 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
     size_t ng_turns, ng_steps;
     if (speak_ngram_rebuild(c->l, &c->cfg, c->turns, &ng_turns, &ng_steps, err, errlen))
         return -1;
+    /* how each word is written ("MechJev"), from the lines heard */
+    size_t cs_lines;
+    if (speak_casing_rebuild(c->l, c->turns, &cs_lines, err, errlen))
+        return -1;
     /* the pointer, fitted again to the past (pointer.h; MJ2_COPY) */
     size_t pt_turns, pt_steps;
     if (c->cfg.copy && speak_pointer_rebuild(c->l, &c->cfg, c->turns, &pt_turns, &pt_steps, err, errlen))
@@ -750,6 +754,7 @@ static size_t hear_text(learner_t *l, const char *text)
         size_t n = split_words(one, &w);
         if (n) {
             learner_hear(l, w, n);
+            learner_hear_casing(l, one);
             sentences++;
         }
         free_words(w, n);

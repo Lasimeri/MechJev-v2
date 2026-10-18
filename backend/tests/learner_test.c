@@ -383,6 +383,31 @@ static void pointer_tests(void)
     pt_data_free(&d);
 }
 
+/* How a word is written (learner_hear_casing, lex_shown): the form heard
+ * most with capitals away from a sentence's start ("MechJev" twice, the
+ * teacher's "Mechjev" once, last); a capital only at a sentence's start
+ * says nothing ("The", "Your"). */
+static void casing_tests(void)
+{
+    learner_t *l = learner_new(7);
+    const char *lines[] = {"Your name is MechJev.", "I call you MechJev.", "The cat is small. Hi Mechjev."};
+    for (size_t i = 0; i < 3; i++) {
+        char **w;
+        size_t n = split_words(lines[i], &w);
+        learner_hear(l, w, n);
+        free_words(w, n);
+        learner_hear_casing(l, lines[i]);
+    }
+    const char *mj = lex_shown(l, lex_find(l, "mechjev")), *the = lex_shown(l, lex_find(l, "the"));
+    const char *your = lex_shown(l, lex_find(l, "your")), *i = lex_shown(l, lex_find(l, "i"));
+    CHECK(!strcmp(mj, "MechJev"), "casing: mechjev shown %s, want MechJev", mj);
+    CHECK(!strcmp(the, "the") && !strcmp(your, "your"), "casing: the %s, your %s (a sentence's start says nothing)", the,
+          your);
+    CHECK(!strcmp(i, "i"), "casing: i shown %s (a sentence's start)", i);
+    printf("casing: %s, %s, %s as heard\n", mj, the, your);
+    learner_free(l);
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "three")) { /* only the measure (for comparing builds) */
@@ -570,6 +595,7 @@ int main(int argc, char **argv)
     memory_tests();
     ngram_tests();
     pointer_tests();
+    casing_tests();
     three_words();
     printf("%s\n", fails ? "learner_test: FAILED" : "learner_test: all checks passed");
     return fails ? 1 : 0;

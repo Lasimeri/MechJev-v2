@@ -42,6 +42,11 @@ typedef struct {
     uint32_t heard;  /* times heard in the person's English */
     uint32_t picked; /* times the engine chose it */
     float e[OUT_BITS], em[OUT_BITS], ev[OUT_BITS]; /* latent embedding and its Adam moments */
+    /* its casing as heard: mid-sentence with capitals ("MechJev", "Zin") or
+     * without, and the capitalised form; shown so when capitals won (not
+     * stored: made again from turns.jsonl at a start, learner_hear_casing) */
+    uint32_t cap_mid, low_mid, cased_votes; /* cased_votes: its form's lead (a majority vote) */
+    char *cased;
 } lex_t;
 
 /* One word the engine decided: what the circuit saw, what was shown, and
@@ -100,6 +105,14 @@ int32_t lex_find(const learner_t *l, const char *w);
 int32_t lex_add(learner_t *l, const char *w);
 bool lex_speakable(const learner_t *l, int32_t i);
 size_t lex_speakable_count(const learner_t *l);
+/* The casing of the words of a line as heard (its original text): a word
+ * with a capital inside it, or one capitalised away from a sentence's start,
+ * counts for that form; one all in small letters counts against. A word
+ * not in the lexicon is passed over. */
+void learner_hear_casing(learner_t *l, const char *text);
+/* Word i as MechJev writes it: the form it heard with capitals when that
+ * won, else as it is kept (small letters). */
+const char *lex_shown(const learner_t *l, int32_t i);
 bool is_punct(const char *w);
 size_t split_words(const char *text, char ***out);
 void free_words(char **w, size_t n);

@@ -293,7 +293,7 @@ void history_free(history_t *h)
 
 static bool sentence_end(const char *w) { return !strcmp(w, ".") || !strcmp(w, "?") || !strcmp(w, "!"); }
 
-char *render_words(char **w, size_t n)
+char *render_words(const learner_t *l, char **w, size_t n)
 {
     sb_t b;
     sb_init(&b);
@@ -311,7 +311,10 @@ char *render_words(char **w, size_t n)
         if (b.n)
             sb_putc(&b, ' ');
         size_t at = b.n;
-        sb_puts(&b, x);
+        /* as MechJev heard it written: "MechJev", not "mechjev" (the teacher's
+         * check gave "Mechjev." 0.19 to 0.26 against "MechJev." 0.96) */
+        int32_t wi = l ? lex_find(l, x) : -1;
+        sb_puts(&b, wi >= 0 ? lex_shown(l, wi) : x);
         if (x[0] == 'i' && (x[1] == 0 || x[1] == '\'')) /* I, I'm, I've, I'll, I'd */
             b.s[at] = 'I';
         if (cap && (unsigned char)b.s[at] < 0x80)
@@ -646,7 +649,7 @@ static char *continuation(const learner_t *l, const speak_cfg_t *cfg, char **sai
     for (size_t i = from; i < t; i++)
         w[n++] = said[i];
     w[n++] = l->v[wi].word;
-    char *r = render_words(w, n);
+    char *r = render_words(l, w, n);
     free(w);
     if (from == 0)
         return r;
@@ -708,7 +711,7 @@ static int rerank(learner_t *l, const speak_cfg_t *cfg, const char *state, char 
         word[i - 1] = word[j];
         word[j] = tw;
     }
-    char *so_far = render_words(said, t);
+    char *so_far = render_words(l, said, t);
     sb_t ins;
     sb_init(&ins);
     if (t == 0) {
@@ -783,11 +786,11 @@ static int rerank(learner_t *l, const speak_cfg_t *cfg, const char *state, char 
  * step variables (into slots, when given) and its coherence. Used when the
  * circuit speaks alone, and once after the last word for the reply's final
  * coherence (the last term of the per-token rewards). */
-static int ask_reply_state(const speak_cfg_t *cfg, const char *state, char **said, size_t t, float *slots,
+static int ask_reply_state(const learner_t *l, const speak_cfg_t *cfg, const char *state, char **said, size_t t, float *slots,
                            json_t *seen, double *coh, cost_t *cost, char *err, size_t errlen)
 {
     json_t *qs = jobj();
-    char *so_far = render_words(said, t);
+    char *so_far = render_words(l, said, t);
     if (slots)
         vars_questions(cfg, true, so_far, NULL, qs);
     jobj_set(qs, "coherence", coherence_q(so_far));
@@ -870,7 +873,7 @@ static size_t phrases(learner_t *l, const speak_cfg_t *cfg, const char *state, c
         }
         if (nopt[i] < 2)
             continue;
-        char *so_far = render_words(s2, t + 1);
+        char *so_far = render_words(l, s2, t + 1);
         sb_t ins;
         sb_init(&ins);
         sb_puts(&ins, "The reply so far is ");
@@ -1003,14 +1006,14 @@ static int lookahead(learner_t *l, const speak_cfg_t *cfg, const char *state, ch
         w2[t] = l->v[pc[i]].word;
         if (ph[i] >= 0)
             w2[t + 1] = l->v[ph[i]].word;
-        ptext[i] = render_words(w2, t + 1 + (ph[i] >= 0));
+        ptext[i] = render_words(l, w2, t + 1 + (ph[i] >= 0));
         char id[24];
         snprintf(id, sizeof id, "v%zu", i);
         jobj_set(qs, id, viability_q(ptext[i], cfg->extra_check));
     }
     free(w2);
     if (may_stop) {
-        char *as_is = render_words(said, t);
+        char *as_is = render_words(l, said, t);
         jobj_set(qs, "complete", complete_q(as_is));
         free(as_is);
     }
@@ -1077,7 +1080,7 @@ static size_t widen(learner_t *l, const speak_cfg_t *cfg, const char *state, cha
         free(pool);
         return 0;
     }
-    char *so_far = render_words(said, t);
+    char *so_far = render_words(l, said, t);
     sb_t ins;
     sb_init(&ins);
     if (t == 0)
@@ -1386,8 +1389,10 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     /* a probe measures, it changes nothing; the parent's words count more
      * (the user's ask: MechJev "needs to imprint itself on the user like a
      * child would as it learns language from a parent") */
-    if (!cfg->probe)
+    if (!cfg->probe) {
         learner_hear_as(l, heard, nh, cfg->parent ? PARENT_HEARD : 1);
+        learner_hear_casing(l, person); /* and how it is written ("MechJev") */
+    }
     if (!cfg->probe)
         l->turns++;
     char *state = conversation(h, person, cfg->persona);
@@ -1580,7 +1585,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
         if (cfg->alone) {
             /* The circuit alone: its own first word, no engine choice. The
              * engine still perceives the reply so far (the step variables). */
-            if (ask_reply_state(cfg, state, said, t, slots, step_vars, &coh[t], &cost, err, errlen)) {
+            if (ask_reply_state(l, cfg, state, said, t, slots, step_vars, &coh[t], &cost, err, errlen)) {
                 json_free(step);
                 json_free(step_vars);
                 goto fail;
@@ -1671,7 +1676,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
         words += !is_punct(l->v[said_word].word);
         prev = said_word;
         if (cfg->on_word) {
-            char *so_far = render_words(said, t);
+            char *so_far = render_words(l, said, t);
             cfg->on_word(cfg->on_word_ud, so_far);
             free(so_far);
         }
@@ -1679,7 +1684,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     /* The reply's final coherence, unless the step that ended it asked
      * already, then each word's reward: the change it made (RED). */
     if (t && !have[t]) {
-        if (ask_reply_state(cfg, state, said, t, NULL, NULL, &coh[t], &cost, err, errlen))
+        if (ask_reply_state(l, cfg, state, said, t, NULL, NULL, &coh[t], &cost, err, errlen))
             goto fail;
         have[t] = true;
     }
@@ -1735,7 +1740,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
             if (ex[j].pos == at)
                 jobj_set(st, "reward", jf64(round(ex[j].reward * 1e4) / 1e4));
     }
-    *reply = render_words(said, t);
+    *reply = render_words(l, said, t);
 
     /* The requirements: a Noul each about the finished reply. One below
      * 0.5 and the reply failed: its examples are kept, never learned from. */
@@ -2082,6 +2087,39 @@ int speak_ngram_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns_
             hist[NG_ORD - 1] = pk && pk->t == J_STR ? lex_find(l, pk->s) : -1;
         }
         (*turns_out)++;
+        json_free(r);
+    }
+    free(line);
+    fclose(f);
+    return 0;
+}
+
+int speak_casing_rebuild(learner_t *l, const char *turns_path, size_t *lines, char *err, size_t errlen)
+{
+    for (size_t i = 0; i < l->n; i++) {
+        l->v[i].cap_mid = l->v[i].low_mid = l->v[i].cased_votes = 0;
+        free(l->v[i].cased);
+        l->v[i].cased = NULL;
+    }
+    *lines = 0;
+    FILE *f = fopen(turns_path, "r");
+    if (!f) {
+        if (errno == ENOENT)
+            return 0;
+        snprintf(err, errlen, "%s: %s", turns_path, strerror(errno));
+        return -1;
+    }
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t len;
+    while ((len = getline(&line, &cap, f)) > 0) {
+        char perr[128];
+        json_t *r = json_parse(line, (size_t)len, perr, sizeof perr);
+        const json_t *person = r ? jobj_get(r, "person") : NULL, *mode = r ? jobj_get(r, "mode") : NULL;
+        if (person && person->t == J_STR && !(mode && mode->t == J_STR && !strcmp(mode->s, "probe"))) {
+            learner_hear_casing(l, person->s);
+            (*lines)++;
+        }
         json_free(r);
     }
     free(line);

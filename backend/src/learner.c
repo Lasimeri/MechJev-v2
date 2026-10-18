@@ -152,6 +152,58 @@ size_t split_words(const char *text, char ***out)
     return n;
 }
 
+void learner_hear_casing(learner_t *l, const char *text)
+{
+    const unsigned char *s = (const unsigned char *)text;
+    bool start = true; /* at a sentence's start: a capital there says nothing */
+    while (*s) {
+        bool word = isalnum(*s) || *s == '\'' || *s >= 0x80;
+        if (!word) {
+            if (strchr(".?!", *s))
+                start = true;
+            s++;
+            continue;
+        }
+        sb_t low, orig;
+        sb_init(&low);
+        sb_init(&orig);
+        bool first_cap = isupper(*s), inner_cap = false;
+        for (size_t k = 0; *s && (isalnum(*s) || *s == '\'' || *s >= 0x80); k++, s++) {
+            if (k > 0 && isupper(*s))
+                inner_cap = true;
+            sb_putc(&low, (char)(*s < 0x80 ? tolower(*s) : *s));
+            sb_putc(&orig, (char)*s);
+        }
+        int32_t i = lex_find(l, low.s);
+        if (i >= 0) {
+            lex_t *x = &l->v[i];
+            if (inner_cap || (first_cap && !start)) {
+                x->cap_mid++;
+                /* the form written most (a running majority vote): 51 "MechJev",
+                 * 1 "Mechjev" from the teacher, the latter last */
+                if (x->cased && !strcmp(x->cased, orig.s))
+                    x->cased_votes++;
+                else if (!x->cased_votes) {
+                    free(x->cased);
+                    x->cased = sb_take(&orig);
+                    x->cased_votes = 1;
+                } else
+                    x->cased_votes--;
+            } else if (!first_cap)
+                x->low_mid++;
+        }
+        sb_free(&orig);
+        sb_free(&low);
+        start = false;
+    }
+}
+
+const char *lex_shown(const learner_t *l, int32_t i)
+{
+    const lex_t *x = &l->v[i];
+    return x->cased && x->cap_mid > x->low_mid ? x->cased : x->word;
+}
+
 void free_words(char **w, size_t n)
 {
     for (size_t i = 0; i < n; i++)
@@ -210,7 +262,7 @@ void learner_free(learner_t *l)
     if (!l)
         return;
     for (size_t i = 0; i < l->n; i++)
-        free(l->v[i].word);
+        free(l->v[i].word), free(l->v[i].cased);
     for (int i = 0; i < VAR_SLOTS; i++)
         free(l->slot[i]);
     free(l->v);

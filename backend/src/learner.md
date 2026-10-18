@@ -321,3 +321,21 @@ circuit measured on the last 10 taught turns (41 words) agreed 0.220 with
 every input and 0.220 with the variables blanked; the old circuit had
 measured 0.268 and 0.268 on the same turns. Neither uses the variables,
 because on this record they do not decide the words.
+
+## How a word is written
+
+The lexicon keeps words in small letters (`split_words`), and a reply was
+written so: "Mechjev." The teacher's own check took that for another name:
+"Mechjev." 0.19 to 0.26 against "MechJev." 0.96, "My name is mechjev."
+0.86 against 0.99 (2026-10-18, three lines of the name stage,
+`~/.cache/mechjev-v2-name-check.txt`); the name stage stalled on it. Now a
+word is written as MechJev heard it (`learner_hear_casing`, `lex_shown`,
+`render_words`): a word with a capital inside it, or capitalised away
+from a sentence's start, counts for that form, one in small letters
+against; the form written most wins by a running majority vote (51
+"MechJev", 1 "Mechjev" from the teacher). A capital at a sentence's start
+says nothing ("The"). Not stored: made again from the person's lines in
+`turns.jsonl` at every start (`speak_casing_rebuild`); a line heard
+through `/v1/hear` counts while the learner runs. From 267 lines: 37 words
+written with capitals, MechJev, I and the names of the unknown stage
+("Zin", "Glim").
