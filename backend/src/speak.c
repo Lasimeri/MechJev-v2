@@ -62,7 +62,8 @@ static char *trimmed(const char *s, size_t n)
  * on cases framed as a live turn is ("Know who that is." no subject 0.794). */
 static const char *GRAMMAR[2] = {
     "A sentence of the newest reply has no subject: it starts with a verb and leaves out who does it, "
-    "as Know who that is. or Am too. do. (Yes, no, greetings, thanks, and short answers like Blue. are "
+    "as Know who that is. or Am too. do. (Yes, no, greetings, thanks, short answers like Blue., and "
+    "short questions like What spro? are "
     "not such sentences.)",
     "A sentence of the newest reply is broken: its words do not fit together as English, as My it is. or "
     "Yes am fine.",
