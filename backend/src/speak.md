@@ -318,3 +318,49 @@ lookahead's viability) now end, in a taught turn with a teacher's check,
 words; the engine still chooses each word among MechJev's own. The first
 taught turn with it: "What spro?" to "Do you feel the Spro?", check 0.94,
 every requirement met.
+
+## Gated
+
+The user's ask (2026-10-18): "Rather than next word probabilities,
+utilize the gated networks of the analog LLM we've made", and, asked
+which, both: the engine's choice of MechJev's words in a taught turn, and
+the distributions mixed inside MechJev. With `MJ2_GATED=1`:
+
+- **Every word is MechJev's, by gates** (`gated_generate`). The pointer's
+  word when its gate opens; else the n-gram's word when its meaning gate is
+  at least 0.5 and the word is among the circuit's three best code matches
+  (the n-gram stays below the circuit: alone it would be a Markov chain);
+  else the circuit's best code match (`score_bits`). Nothing is mixed. The
+  engine still perceives the reply as it grows (the step variables) and
+  chooses nothing; the lookahead, the widening and the coherence keeper
+  (which picked by the engine's scores) are not used.
+- **A taught turn tries replies, judged whole** (`gated_tries`): the
+  gates' reply; its first word ended at once ("Round it green." missed
+  where "Round!" passes); another first word, the stage's shown words
+  first, then the person's, then the circuit's next match (the only way a
+  word it never said can come: "Welcome", "Bye"). Each is judged as a turn
+  is, the requirements and the stage check in the teacher's framing; the
+  first accepted is kept, never the best scored. A check, a probe and a
+  turn that learns nothing have one try. Each try goes on the activity log
+  and shows in the TUI (`try 2 "Round!" accepted`).
+- **It learns from the judgment only.** The kept try's words, when it was
+  accepted, are learned by a margin on the code match (`learner.c`,
+  `l->hinge`): the word above the best other speakable word and above the
+  word a rejected try said where it parted from it, by one score unit (8
+  output bits). A rejected reply teaches nothing: which of its words was
+  wrong cannot be told from the judge's noise. The examples kept from
+  before keep the engine's choice as their word; their probabilities are
+  not used.
+
+Why the whole reply and not each word: the engine's viability of one word
+(`~/.cache/mechjev-v2-judge-word.txt`, the live framing, today's lines)
+gave right words 0.52 to 0.79 and wrong ones 0.28 to 0.63 ("Fish" 0.63
+where "Wet" 0.69): no threshold parts them, and ranking by it is the
+engine choosing again. The judgment of a whole reply is the one a turn
+already has (the stage check: "MechJev." 0.96 against "Mechjev." 0.2).
+
+Measured before it was used (prequential over 383 learned words, the
+n-gram and the pointer from the turns before only,
+`~/.cache/mechjev-v2-cascade-check.txt`): agreement with the engine's word
+226 for today's mixture, 217 for the gates (the n-gram decided 33 words, 19
+right). The grounding toy by a margin: 0.887 against 0.906 (8 seeds).
