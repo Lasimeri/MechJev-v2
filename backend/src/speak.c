@@ -60,6 +60,7 @@ static char *trimmed(const char *s, size_t n)
  * replies ("Yes." 0.74 to 0.83, "Know who?" 0.86). A sentence with no
  * subject, or one whose words do not fit together, fails the reply: 26 of 27
  * on cases framed as a live turn is ("Know who that is." no subject 0.794). */
+#define NO_SUBJECT_MIN 0.6 /* "no subject" fails the reply from here: short questions sat at 0.5 live */
 static const char *GRAMMAR[2] = {
     "A sentence of the newest reply has no subject: it starts with a verb and leaves out who does it, "
     "as Know who that is. or Am too. do. (Yes, no, greetings, thanks, short answers like Blue., and "
@@ -1283,7 +1284,9 @@ static void judge_reply(const speak_cfg_t *cfg, const char *state, const char *r
                 json_t *v = jobj_get(jobj_get(a2, id), "noul");
                 gp[i] = v && v->t == J_NUM ? v->f : 1;
             }
-            bool ok = gp[0] < 0.5 && gp[1] < 0.5; /* no sentence without its subject, none broken */
+            /* no sentence without its subject (from NO_SUBJECT_MIN: the judge
+             * gave "What fren?" 0.515 live, fragments 0.63 to 0.79), none broken */
+            bool ok = gp[0] < NO_SUBJECT_MIN && gp[1] < 0.5;
             failed |= !ok;
             jobj_set(checks, "The reply is a complete English reply.", jf64(ok ? 1 : 0));
             json_t *gj = jobj();
