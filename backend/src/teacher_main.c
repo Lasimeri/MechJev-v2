@@ -19,6 +19,7 @@
 #include <time.h>
 
 #include "conf.h"
+#include "activity.h"
 #include "json.h"
 #include "teach.h"
 #include "util.h"
@@ -72,6 +73,12 @@ static void append(const char *path, const json_t *row)
         fclose(f);
     }
     free(s);
+    /* and where the harness shows it (activity.h): every verdict, measure,
+     * promotion and stage move */
+    json_t *e = jclone(row);
+    jobj_set(e, "kind", jstr("lesson"));
+    activity_append(e);
+    json_free(e);
 }
 
 /* Every row of a .jsonl file. */

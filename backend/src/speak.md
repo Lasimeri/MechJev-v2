@@ -96,7 +96,9 @@ One turn of conversation, every word a decision of the engine.
 answers the variables (its perception of the conversation and of the reply
 so far) and judges the requirements, but chooses no word. Nothing is
 learned. The words are the circuit's own first word at each step, so
-this shows what it has acquired.
+this shows what it has acquired. With `MJ2_COPY=1` the pointer may name a
+word of the person's line instead, where its gate opens (pointer.md; the
+trace says `from: "pointer"`).
 
 ## The person's words, offered
 

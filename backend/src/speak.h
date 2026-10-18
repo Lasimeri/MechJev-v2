@@ -64,6 +64,7 @@ typedef struct {
     bool phrases; /* the lookahead judges two-word phrases, not single words (speak.md; MJ2_PHRASES) */
     bool persona; /* the conversation says who MechJev is (PERSONA; MJ2_PERSONA) */
     const char *extra_check; /* the teacher's stage check for this turn, judged as one more requirement; NULL: none */
+    bool copy; /* the pointer: adaptive attention over the person's line may name the word (pointer.h; MJ2_COPY) */
     sampling_t sampling;
     /* Called with the reply so far after every word (a terminal shows it live). */
     void (*on_word)(void *ud, const char *reply_so_far);
@@ -118,6 +119,15 @@ int speak_memory_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns
  * nothing of it is stored. */
 int speak_ngram_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns_path, size_t *turns,
                         size_t *steps, char *err, size_t errlen);
+/* The pointer's past (pointer.h): each passed taught turn's line, with the
+ * hearings replayed as the turns made them, and each learned word's circuit
+ * output (as the circuit is now). */
+int speak_pointer_data(learner_t *l, const speak_cfg_t *cfg, const char *turns_path, pt_data_t *d, char *err,
+                       size_t errlen);
+/* The pointer fitted again from turns.jsonl (pt_fit over speak_pointer_data):
+ * at every start with cfg.copy, nothing of it stored. */
+int speak_pointer_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns_path, size_t *turns,
+                          size_t *steps, char *err, size_t errlen);
 /* Every passed taught turn of turns.jsonl judged again by today's
  * requirements (the user's choice, 2026-10-17: the caveman replies had
  * passed the old grammar). A reply that fails now is marked so in its record

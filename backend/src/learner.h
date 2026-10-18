@@ -19,6 +19,7 @@
 #include "circuit.h"
 #include "hdmem.h"
 #include "ngram.h"
+#include "pointer.h"
 
 #define LEARNER_VERSION 4u
 #define VAR_SLOTS 64 /* variable inputs; unused slots read 0.5 */
@@ -76,6 +77,7 @@ typedef struct {
     float recent_share; /* share of rehearsal passes drawn from the last RECENT_EXAMPLES (configuration) */
     ngram_t ng;        /* the meaning-gated n-gram memory, made from turns.jsonl at every start (ngram.h) */
     float ng_weight;   /* its share of a word's probability, times its gate; 0: off (configuration) */
+    pointer_t pt;      /* adaptive attention over the person's line, made from turns.jsonl at every start (pointer.h) */
     bool circuit_fresh; /* the circuit was made new at load (another input layout): learner circuit-rebuild */
 } learner_t;
 
@@ -130,6 +132,10 @@ typedef struct {
  * (with a context and a mem_weight) the fast memory, and (with a query and
  * an ng_weight) the n-gram memory; and the softmax probability of the first
  * (how sure it is). */
+/* The circuit's output bits for these inputs (the pointer's query), and its
+ * probability of word w over the speakable words from them. */
+void learner_out_bits(const learner_t *l, const uint8_t *bits, uint8_t *a);
+float learner_circuit_prob(const learner_t *l, const uint8_t *a, int32_t w);
 size_t learner_propose(const learner_t *l, const uint8_t *bits, const hv_t *context, ng_query_t *ngq,
                        int32_t *out, size_t k, bool allow_end, double *p_first);
 /* Learn a turn's examples (a failed one only the engine's preference among the

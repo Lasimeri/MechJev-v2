@@ -27,6 +27,7 @@
 
 #include "conf.h"
 #include "http.h"
+#include "activity.h"
 #include "json.h"
 #include "learner.h"
 #include "speak.h"
@@ -42,6 +43,7 @@
 
 typedef struct {
     char *dir, *store, *curves, *history, *turns; /* turns: whole records, the per-word trace kept */
+    char *harness, *name; /* the harness's directory when it is not dir, and this learner's name there (activity.h) */
     learner_t *l;
     speak_cfg_t cfg;
     history_t h;
@@ -179,6 +181,16 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
 {
     memset(c, 0, sizeof *c);
     c->dir = data_dir();
+    /* a learner on another data directory (a test, an A/B) shows in the
+     * harness under its name (MJ2_NAME, else its directory's) */
+    c->harness = harness_dir();
+    if (!strcmp(c->harness, c->dir)) {
+        free(c->harness);
+        c->harness = NULL;
+    }
+    const char *nm = getenv("MJ2_NAME");
+    const char *base = strrchr(c->dir, '/');
+    c->name = nm && *nm ? xstrdup(nm) : c->harness ? xstrdup(base ? base + 1 : c->dir) : NULL;
     if (mkdir_p(c->dir)) {
         snprintf(err, errlen, "%s: %s", c->dir, strerror(errno));
         return -1;
@@ -216,6 +228,8 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
         s->min_p = strtod(v, NULL);
     if ((v = getenv("MJ2_REPEAT_PENALTY")) && *v)
         s->repeat_penalty = strtod(v, NULL);
+    if ((v = getenv("MJ2_COPY")) && *v)
+        c->cfg.copy = strcmp(v, "0") != 0;
     if ((v = getenv("MJ2_PERSONA")) && *v)
         c->cfg.persona = strcmp(v, "0") != 0;
     if ((v = getenv("MJ2_PHRASES")) && *v)
@@ -258,6 +272,12 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
     size_t ng_turns, ng_steps;
     if (speak_ngram_rebuild(c->l, &c->cfg, c->turns, &ng_turns, &ng_steps, err, errlen))
         return -1;
+    /* the pointer, fitted again to the past (pointer.h; MJ2_COPY) */
+    size_t pt_turns, pt_steps;
+    if (c->cfg.copy && speak_pointer_rebuild(c->l, &c->cfg, c->turns, &pt_turns, &pt_steps, err, errlen))
+        return -1;
+    if (c->cfg.copy)
+        fprintf(stderr, "learner: pointer fitted to %zu turns, %zu words\n", pt_turns, pt_steps);
     load_history(c);
     pthread_mutex_init(&c->mu, NULL);
     return 0;
@@ -265,6 +285,8 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
 
 static void close_ctx(ctx_t *c)
 {
+    free(c->harness);
+    free(c->name);
     learner_free(c->l);
     history_free(&c->h);
     for (size_t i = 0; i < c->cfg.nchecks; i++)
@@ -316,27 +338,42 @@ static int persist(ctx_t *c, const json_t *rec, char *err, size_t errlen)
  * shown nothing in it): `turn.json` {line, speaker, mode} in the data
  * directory while it runs, written before the first word, removed with the
  * reply so far when it ends. Under c->mu. */
+static void write_live(const char *dir, const char *name, const char *text)
+{
+    sb_t tmp;
+    sb_init(&tmp);
+    sb_printf(&tmp, "%s/%s.tmp", dir, name);
+    char *path = join(dir, name);
+    FILE *f = fopen(tmp.s, "w");
+    if (f) {
+        fputs(text, f);
+        if (fclose(f) == 0)
+            rename(tmp.s, path);
+    }
+    sb_free(&tmp);
+    free(path);
+}
+
 static void turn_begin(const ctx_t *c, const char *line, const char *speaker, const char *mode)
 {
     json_t *o = jobj();
     jobj_set(o, "line", jstr(line));
     jobj_set(o, "speaker", speaker && *speaker ? jstr(speaker) : jnull());
     jobj_set(o, "mode", jstr(mode));
+    jobj_set(o, "instance", c->name ? jstr(c->name) : jnull());
     char *s = json_dump(o);
     json_free(o);
-    char *tmp = join(c->dir, "turn.json.tmp"), *path = join(c->dir, "turn.json");
-    FILE *f = fopen(tmp, "w");
-    if (f) {
-        fputs(s, f);
-        if (fclose(f) == 0)
-            rename(tmp, path);
-    }
+    write_live(c->dir, "turn.json", s);
+    if (c->harness) /* a learner elsewhere shows in the harness too (activity.h) */
+        write_live(c->harness, "turn.json", s);
     free(s);
-    free(tmp);
-    free(path);
 }
 
-static void turn_end(const ctx_t *c)
+/* The turn is over: its live files go, and the turn onto the activity log
+ * (rec NULL: it failed; nothing to show). In the harness's directory the
+ * live files go only while they are this learner's: another may be
+ * answering there now. */
+static void turn_end(const ctx_t *c, const json_t *rec, const char *mode, const char *speaker)
 {
     const char *names[] = {"speaking.txt", "speaker.txt", "turn.json"};
     for (size_t i = 0; i < sizeof names / sizeof *names; i++) {
@@ -344,6 +381,54 @@ static void turn_end(const ctx_t *c)
         unlink(p);
         free(p);
     }
+    if (c->harness) {
+        char *tj = join(c->harness, "turn.json");
+        char *text = read_file(tj, NULL);
+        json_t *live = text ? json_parse(text, strlen(text), NULL, 0) : NULL;
+        const json_t *in = live ? jobj_get(live, "instance") : NULL;
+        if (in && in->t == J_STR && !strcmp(in->s, c->name)) {
+            char *sp = join(c->harness, "speaking.txt");
+            unlink(sp);
+            free(sp);
+            unlink(tj);
+        }
+        json_free(live);
+        free(text);
+        free(tj);
+    }
+    if (!rec)
+        return;
+    /* what the TUI shows of a turn: who, the line, the reply, each word */
+    json_t *e = jobj();
+    jobj_set(e, "kind", jstr("turn"));
+    jobj_set(e, "instance", c->name ? jstr(c->name) : jnull());
+    jobj_set(e, "mode", jstr(mode));
+    jobj_set(e, "speaker", speaker && *speaker ? jstr(speaker) : jnull());
+    const char *keep[] = {"person", "reply", "failed_requirement", "coherence_final", "ms_per_word"};
+    for (size_t i = 0; i < sizeof keep / sizeof *keep; i++) {
+        const json_t *v = jobj_get(rec, keep[i]);
+        if (v)
+            jobj_set(e, keep[i], jclone(v));
+    }
+    json_t *words = jarr();
+    const json_t *trace = jobj_get(rec, "trace");
+    for (size_t k = 0; trace && trace->t == J_ARR && k < trace->n; k++) {
+        const json_t *st = trace->items[k], *pk = jobj_get(st, "pick");
+        if (!pk || pk->t != J_STR)
+            continue;
+        json_t *w = jobj();
+        jobj_set(w, "pick", jclone(pk));
+        const char *more[] = {"reward", "from"};
+        for (size_t m = 0; m < 2; m++) {
+            const json_t *v = jobj_get(st, more[m]);
+            if (v)
+                jobj_set(w, more[m], jclone(v));
+        }
+        jarr_push(words, w);
+    }
+    jobj_set(e, "trace", words);
+    activity_append(e);
+    json_free(e);
 }
 
 /* One turn; alone: the circuit speaks by itself this turn (the engine
@@ -366,11 +451,25 @@ static int one_turn(ctx_t *c, const char *message, bool alone, const char *show,
     }
     turn_begin(c, message, speaker, cfg.alone ? "alone" : "taught");
     int rc = speak_turn(c->l, &cfg, &c->h, message, reply, rec, err, errlen);
-    turn_end(c); /* the turn is over: nothing is being said, no one waits */
+    /* the turn is over: nothing is being said, no one waits */
+    turn_end(c, rc ? NULL : *rec, cfg.alone ? "alone" : "taught", speaker);
     if (!rc && speaker && *speaker) /* who said it, for the TUI (the teacher: "Qwen") */
         jobj_set(*rec, "speaker", jstr(speaker));
     if (!rc)
         rc = persist(c, *rec, err, errlen);
+    /* The pointer adapts: a passed taught turn is in turns.jsonl now, and the
+     * pointer is fitted again to the whole past with it, as a start would
+     * (pointer.md; a tenth of a second at 87 turns). */
+    const json_t *fr = !rc && cfg.copy && !cfg.alone ? jobj_get(*rec, "failed_requirement") : NULL;
+    if (fr && fr->t == J_BOOL && !fr->b) {
+        size_t pt_turns, pt_steps;
+        double t0 = now_ms();
+        if (speak_pointer_rebuild(c->l, &c->cfg, c->turns, &pt_turns, &pt_steps, err, errlen))
+            rc = -1;
+        else
+            fprintf(stderr, "learner: pointer fitted again to %zu turns, %zu words (%.0f ms)\n", pt_turns, pt_steps,
+                    now_ms() - t0);
+    }
     pthread_mutex_unlock(&c->mu);
     return rc;
 }
@@ -383,15 +482,9 @@ static bool g_terminal;
 static void live_word(void *ud, const char *so_far)
 {
     const ctx_t *c = ud;
-    char *tmp = join(c->dir, "speaking.txt.tmp"), *path = join(c->dir, "speaking.txt");
-    FILE *f = fopen(tmp, "w");
-    if (f) {
-        fputs(so_far, f);
-        if (fclose(f) == 0)
-            rename(tmp, path);
-    }
-    free(tmp);
-    free(path);
+    write_live(c->dir, "speaking.txt", so_far);
+    if (c->harness)
+        write_live(c->harness, "speaking.txt", so_far);
     if (g_terminal) {
         printf("\r\033[Klearner: %s", so_far);
         fflush(stdout);
@@ -464,7 +557,7 @@ static int probe_one(ctx_t *c, const char *msg, json_t **out, char *err, size_t 
     pthread_mutex_lock(&c->mu);
     turn_begin(c, msg, NULL, "probe");
     int rc = speak_turn(c->l, &cfg, &empty, msg, &reply, out, err, errlen);
-    turn_end(c);
+    turn_end(c, rc ? NULL : *out, "probe", NULL);
     pthread_mutex_unlock(&c->mu);
     history_free(&empty);
     free(reply);
@@ -522,7 +615,7 @@ static int run_probes(ctx_t *c, double ng_weight, json_t **out, char *err, size_
             float used_ng = c->l->ng_weight;
             turn_begin(c, q, NULL, "probe");
             rc = speak_turn(c->l, &cfg, &empty, q, &reply, &rec, err, errlen);
-            turn_end(c);
+            turn_end(c, rc ? NULL : rec, "probe", NULL);
             c->l->ng_weight = keep;
             size_t turns = c->l->turns, lexicon = c->l->n, say = lex_speakable_count(c->l);
             pthread_mutex_unlock(&c->mu);
@@ -1148,6 +1241,13 @@ int main(int argc, char **argv)
         const char *bind = conf_get("MJ2_BIND", "127.0.0.1:8092");
         if (argc >= 4 && !strcmp(argv[2], "--bind"))
             bind = argv[3];
+        if (c.harness && !(getenv("MJ2_NAME") && *getenv("MJ2_NAME"))) { /* its name in the harness: where it listens */
+            sb_t nm;
+            sb_init(&nm);
+            sb_printf(&nm, "%s %s", c.name, bind);
+            free(c.name);
+            c.name = sb_take(&nm);
+        }
         rc = cmd_serve(&c, bind);
     } else {
         usage();

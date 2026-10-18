@@ -1,7 +1,14 @@
 # tui/talk.rs
 
 The talk screen's state.
-- **The conversation.** It is read from the learner's `turns.jsonl` (last
+- **The conversation.** It is read from `activity.jsonl` in the
+  harness's directory (activity.md; last 80 entries): every learner's
+  turns and probes, a learner run on another data directory too (a test,
+  an A/B, labelled `on <its name>`), and the teacher's verdicts (`qwen`,
+  one line each: `told check, alone: check 0.88, passed (stage 5)`). The
+  user's ask (2026-10-18): "The harness should show all activity". Words
+  the pointer copied from the person's line are named under the reply
+  (pointer.md). Before the log existed: the learner's `turns.jsonl` (last
   40 turns), so turns from any client show: this screen, `mjev2 mcp`,
   `mjev2 talk`, `learner talk`.
 - **The line being answered**, shown above the reply as it grows: the

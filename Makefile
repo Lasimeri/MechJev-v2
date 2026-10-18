@@ -57,19 +57,19 @@ clean:
 	rm -rf $(B) frontend/target
 
 # The learner links no llama.cpp: its decisions come from xks over HTTP.
-LEARNER_OBJS := $(B)/util.o $(B)/json.o $(B)/http.o $(B)/conf.o $(B)/circuit.o $(B)/hdmem.o $(B)/ngram.o $(B)/learner.o \
+LEARNER_OBJS := $(B)/util.o $(B)/json.o $(B)/activity.o $(B)/http.o $(B)/conf.o $(B)/circuit.o $(B)/hdmem.o $(B)/ngram.o $(B)/pointer.o $(B)/learner.o \
                 $(B)/speak.o $(B)/learner_main.o
 
 $(B)/learner: $(LEARNER_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 # The teacher links no llama.cpp either: Qwen through xks, MechJev through learner serve.
-TEACHER_OBJS := $(B)/util.o $(B)/json.o $(B)/http.o $(B)/conf.o $(B)/teach.o $(B)/teacher_main.o
+TEACHER_OBJS := $(B)/util.o $(B)/json.o $(B)/activity.o $(B)/http.o $(B)/conf.o $(B)/teach.o $(B)/teacher_main.o
 
 $(B)/teacher: $(TEACHER_OBJS)
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
-$(B)/learner_test: backend/tests/learner_test.c $(B)/learner.o $(B)/hdmem.o $(B)/ngram.o $(B)/circuit.o $(B)/util.o
+$(B)/learner_test: backend/tests/learner_test.c $(B)/learner.o $(B)/hdmem.o $(B)/ngram.o $(B)/pointer.o $(B)/circuit.o $(B)/util.o
 	$(CC) $(CFLAGS) -o $@ $^ -lm
 
 frontend: ## Build the front end, frontend/target/release/mjev2 (Rust, offline)
@@ -87,5 +87,5 @@ mcp: frontend ## The MCP server on stdio (for claude mcp add)
 
 # The learner test again under AddressSanitizer and UBSan: a stale write
 # into the lexicon (fixed 2026-10-17) corrupted the live learner's heap.
-$(B)/learner_test_asan: backend/tests/learner_test.c $(SRC)/learner.c $(SRC)/hdmem.c $(SRC)/ngram.c $(SRC)/circuit.c $(SRC)/util.c $(SRC)/*.h | $(B)
-	$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -std=gnu11 -pthread -o $@ backend/tests/learner_test.c $(SRC)/learner.c $(SRC)/hdmem.c $(SRC)/ngram.c $(SRC)/circuit.c $(SRC)/util.c -lm
+$(B)/learner_test_asan: backend/tests/learner_test.c $(SRC)/learner.c $(SRC)/hdmem.c $(SRC)/ngram.c $(SRC)/pointer.c $(SRC)/circuit.c $(SRC)/util.c $(SRC)/*.h | $(B)
+	$(CC) -O1 -g -fsanitize=address,undefined -fno-omit-frame-pointer -std=gnu11 -pthread -o $@ backend/tests/learner_test.c $(SRC)/learner.c $(SRC)/hdmem.c $(SRC)/ngram.c $(SRC)/pointer.c $(SRC)/circuit.c $(SRC)/util.c -lm

@@ -1373,6 +1373,15 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
         novel += wi < 0 || l->v[wi].heard == 0;
     }
     double novelty = content ? (double)novel / (double)content : 0;
+    /* the pointer's view of the line: each token's hearings before this turn */
+    unsigned pt_heard[PT_MAXT];
+    bool pt_mark[PT_MAXT];
+    int pt_n = nh < PT_MAXT ? (int)nh : PT_MAXT;
+    for (int j = 0; j < pt_n; j++) {
+        int32_t wi = lex_find(l, heard[j]);
+        pt_heard[j] = wi < 0 ? 0 : l->v[wi].heard;
+        pt_mark[j] = is_punct(heard[j]);
+    }
     /* a probe measures, it changes nothing; the parent's words count more
      * (the user's ask: MechJev "needs to imprint itself on the user like a
      * child would as it learns language from a parent") */
@@ -1381,6 +1390,14 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     if (!cfg->probe)
         l->turns++;
     char *state = conversation(h, person, cfg->persona);
+    /* the line's tokens now that they are heard (a new word has its id) */
+    pt_line_t pl;
+    {
+        int32_t ids[PT_MAXT];
+        for (int j = 0; j < pt_n; j++)
+            ids[j] = lex_find(l, heard[j]);
+        pt_line(&pl, ids, pt_heard, pt_mark, pt_n);
+    }
     /* the words it can say, for a question about what it knows ({words}) */
     sb_t known;
     sb_init(&known);
@@ -1473,6 +1490,24 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
             if (allowed(l, said, t, ranked[i]))
                 ranked[nr++] = ranked[i];
         int32_t top1 = nr ? ranked[0] : -1;
+        /* the pointer (cfg.copy, MJ2_COPY): adaptive attention over the
+         * person's line; when its gate opens, the word it names is MechJev's
+         * own word alone (a taught turn offers the person's words anyway) */
+        float pt_gate = 1;
+        int32_t pt_word = -1;
+        if (cfg->copy && pl.n) {
+            uint8_t oa[OUT_BITS];
+            learner_out_bits(l, bits, oa);
+            int32_t sid[PT_SAID];
+            size_t nsid = 0;
+            for (size_t q = 0; q < t && nsid < sizeof sid / sizeof *sid; q++)
+                sid[nsid++] = lex_find(l, said[q]);
+            float att[PT_MAXT];
+            pt_gate = pt_forward(&l->pt, oa, slots, &pl, t, sid, nsid, att);
+            int32_t w = pt_choose(&pl, att, pt_gate);
+            if (w >= 0 && strcmp(l->v[w].word, START) && allowed(l, said, t, w))
+                pt_word = w;
+        }
         /* What the engine is shown: every word the learner may say while they
          * fit in one Choice (a teacher sees a beginner's whole vocabulary),
          * else the circuit's best and, when it is unsure, words the engine
@@ -1529,6 +1564,10 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
         jobj_set(step, "memory_top", mem_top >= 0 ? jstr(l->v[mem_top].word) : jnull());
         jobj_set(step, "ngram_top", ngq.top >= 0 ? jstr(l->v[ngq.top].word) : jnull());
         jobj_set(step, "ngram_gate", jf64(round(ngq.gate * 1e4) / 1e4));
+        if (cfg->copy) {
+            jobj_set(step, "pointer_gate", jf64(round(pt_gate * 1e4) / 1e4));
+            jobj_set(step, "pointer_word", pt_word >= 0 ? jstr(l->v[pt_word].word) : jnull());
+        }
         if (!nc) {
             jobj_set(step, "pick", jnull());
             jobj_set(step, "note", jstr("no word it knows may come here"));
@@ -1546,9 +1585,9 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
                 goto fail;
             }
             have[t] = true;
-            said_word = top1;
+            said_word = pt_word >= 0 ? pt_word : top1; /* the pointer's word when its gate opened */
             jobj_set(step, "pick", jstr(l->v[said_word].word));
-            jobj_set(step, "from", jstr("circuit alone"));
+            jobj_set(step, "from", jstr(pt_word >= 0 ? "pointer" : "circuit alone"));
         } else {
             step_t st = {0};
             float used[VAR_SLOTS];
@@ -2046,6 +2085,124 @@ int speak_ngram_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns_
     }
     free(line);
     fclose(f);
+    return 0;
+}
+
+int speak_pointer_data(learner_t *l, const speak_cfg_t *cfg, const char *turns_path, pt_data_t *d, char *err,
+                       size_t errlen)
+{
+    memset(d, 0, sizeof *d);
+    FILE *f = fopen(turns_path, "r");
+    if (!f) {
+        if (errno == ENOENT)
+            return 0;
+        snprintf(err, errlen, "%s: %s", turns_path, strerror(errno));
+        return -1;
+    }
+    int32_t start = lex_find(l, START), end = lex_find(l, END);
+    /* the hearings replayed as a turn makes them (speak_turn): every turn
+     * but a probe, the parent's twice; a word heard through /v1/hear is not
+     * in turns.jsonl and is missed */
+    unsigned *heard = xcalloc(l->n + 1, sizeof *heard);
+    size_t capl = 0, caps = 0;
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t len;
+    while ((len = getline(&line, &cap, f)) > 0) {
+        char perr[128];
+        json_t *r = json_parse(line, (size_t)len, perr, sizeof perr);
+        const json_t *person = r ? jobj_get(r, "person") : NULL, *mode = r ? jobj_get(r, "mode") : NULL;
+        if (!r || !person || person->t != J_STR || !mode || mode->t != J_STR || !strcmp(mode->s, "probe")) {
+            json_free(r);
+            continue;
+        }
+        char **words = NULL;
+        size_t nw = split_words(person->s, &words);
+        const json_t *failed = jobj_get(r, "failed_requirement"), *trace = jobj_get(r, "trace");
+        if (!strcmp(mode->s, "taught") && failed && failed->t == J_BOOL && !failed->b && trace && trace->t == J_ARR &&
+            nw) {
+            int n = nw < PT_MAXT ? (int)nw : PT_MAXT;
+            int32_t ids[PT_MAXT];
+            unsigned hn[PT_MAXT];
+            bool mark[PT_MAXT];
+            for (int j = 0; j < n; j++) {
+                ids[j] = lex_find(l, words[j]);
+                hn[j] = ids[j] < 0 ? 0 : heard[ids[j]];
+                mark[j] = is_punct(words[j]);
+            }
+            if (d->nlines == capl)
+                d->lines = xrealloc(d->lines, (capl = capl ? capl * 2 : 64) * sizeof *d->lines);
+            size_t li = d->nlines++;
+            pt_line(&d->lines[li], ids, hn, mark, n);
+            float slots[VAR_SLOTS];
+            for (int i = 0; i < VAR_SLOTS; i++)
+                slots[i] = 0.5f;
+            vars_apply(cfg, false, jobj_get(r, "turn_vars"), slots);
+            const json_t *kept = jobj_get(r, "kept"), *ca = kept ? jobj_get(kept, "cut_at") : NULL;
+            size_t cut = ca && ca->t == J_NUM ? (size_t)ca->u : (size_t)-1;
+            int32_t said[PT_SAID], prev = start;
+            uint32_t ns = 0;
+            for (size_t k = 0; k < trace->n; k++) {
+                const json_t *st = trace->items[k], *tt = jobj_get(st, "t"), *sd = jobj_get(st, "seed_inputs");
+                if (!tt || tt->t != J_NUM)
+                    continue;
+                size_t t = (size_t)tt->u;
+                if (t > cut)
+                    break;
+                const json_t *w = jobj_get(st, "engine_top"), *pk = jobj_get(st, "pick");
+                if (!w || w->t != J_STR)
+                    w = pk;
+                int32_t label = t == cut ? end : w && w->t == J_STR ? lex_find(l, w->s) : -1;
+                if (label >= 0 && sd && sd->t == J_NUM) {
+                    if (d->nsteps == caps)
+                        d->steps = xrealloc(d->steps, (caps = caps ? caps * 2 : 256) * sizeof *d->steps);
+                    pt_step_t *s = &d->steps[d->nsteps++];
+                    uint8_t bits[N_IN];
+                    learner_inputs(l, slots, prev, (unsigned)t, sd->u, ABL_NONE, bits);
+                    learner_out_bits(l, bits, s->a);
+                    memcpy(s->slots, slots, sizeof s->slots);
+                    s->line = li;
+                    s->t = (uint32_t)t;
+                    s->ns = ns;
+                    memcpy(s->said, said, ns * sizeof *said);
+                    s->label = label;
+                    s->pc = learner_circuit_prob(l, s->a, label);
+                }
+                if (t == cut)
+                    break;
+                vars_apply(cfg, true, jobj_get(st, "reply_vars"), slots);
+                int32_t pw = pk && pk->t == J_STR ? lex_find(l, pk->s) : -1;
+                if (ns < PT_SAID)
+                    said[ns++] = pw;
+                prev = pw >= 0 ? pw : prev;
+            }
+        }
+        const json_t *par = jobj_get(r, "parent");
+        unsigned times = par && par->t == J_BOOL && par->b ? PARENT_HEARD : 1;
+        for (size_t j = 0; j < nw; j++) {
+            int32_t i = lex_find(l, words[j]);
+            if (i >= 0)
+                heard[i] += times;
+        }
+        free_words(words, nw);
+        json_free(r);
+    }
+    free(line);
+    free(heard);
+    fclose(f);
+    return 0;
+}
+
+int speak_pointer_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns_path, size_t *turns,
+                          size_t *steps, char *err, size_t errlen)
+{
+    pt_data_t d;
+    if (speak_pointer_data(l, cfg, turns_path, &d, err, errlen))
+        return -1;
+    pt_fit(&l->pt, &d, (size_t)-1);
+    *turns = d.nlines;
+    *steps = d.nsteps;
+    pt_data_free(&d);
     return 0;
 }
 

@@ -196,6 +196,7 @@ learner_t *learner_new(uint64_t seed)
     circuit_init(&l->circ, N_IN, N_LAYERS, LAYERS, seed);
     hd_init(&l->mem, seed ^ MEM_SEED);
     ng_init(&l->ng, VAR_SLOTS);
+    pt_init(&l->pt);
     /* Always there: the start (an input only), the end, the punctuation a
      * sentence needs. Every other word is acquired by hearing it. */
     const char *base[] = {START, END, ".", ",", "?", "!"};
@@ -747,6 +748,7 @@ int learner_load(const char *path, learner_t **out, char *err, size_t errlen)
         goto bad;
     hd_init(&l->mem, l->seed ^ MEM_SEED);
     ng_init(&l->ng, VAR_SLOTS);
+    pt_init(&l->pt);
     for (uint64_t i = 0; i < n; i++) {
         uint16_t len;
         if (!R(len))
@@ -955,3 +957,28 @@ void learner_circuit_reset(learner_t *l)
     l->trained = 0;
     l->circuit_fresh = true;
 }
+
+/* ---- for the pointer (pointer.h) ------------------------------------- */
+
+void learner_out_bits(const learner_t *l, const uint8_t *bits, uint8_t *a) { circuit_run(&l->circ, bits, a); }
+
+float learner_circuit_prob(const learner_t *l, const uint8_t *a, int32_t w)
+{
+    double mx = -INFINITY, z = 0, sw = -INFINITY;
+    for (size_t i = 0; i < l->n; i++) {
+        if (!lex_speakable(l, (int32_t)i))
+            continue;
+        double s = score_bits(&l->v[i], a);
+        mx = fmax(mx, s);
+        if ((int32_t)i == w)
+            sw = s;
+    }
+    if (isinf(mx) || isinf(sw))
+        return 0;
+    for (size_t i = 0; i < l->n; i++)
+        if (lex_speakable(l, (int32_t)i))
+            z += exp(score_bits(&l->v[i], a) - mx);
+    return (float)(exp(sw - mx) / z);
+}
+_Static_assert(PT_BITS == OUT_BITS, "the pointer reads the circuit's output bits");
+_Static_assert(PT_SLOTS == VAR_SLOTS, "the pointer's gate reads the meaning slots");

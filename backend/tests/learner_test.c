@@ -321,6 +321,68 @@ static void ngram_tests(void)
     ng_free(&g);
 }
 
+/* The pointer (pointer.h) on two meanings: told (slot 0 high) answers with
+ * the line's new word first; unknown (slot 0 low) says "what" first (the
+ * circuit's word) and the new word second. Fitted to 40 lines, asked about
+ * a line it never saw: the gate opens where the meaning says, and the
+ * attention names the new word, one the circuit cannot say (P 0). */
+static void pointer_tests(void)
+{
+    enum { THE = 1, Q = 2, WHAT = 3, NOUN = 10, LINES = 40 };
+    pt_data_t d = {0};
+    d.lines = xcalloc(LINES + 1, sizeof *d.lines);
+    d.steps = xcalloc(LINES * 2, sizeof *d.steps);
+    bool mark[3] = {false, false, true};
+    for (int i = 0; i <= LINES; i++) {
+        int32_t tok[3] = {THE, NOUN + i, Q};
+        unsigned heard[3] = {50, 0, 50};
+        pt_line(&d.lines[i], tok, heard, mark, 3);
+    }
+    for (int i = 0; i < LINES; i++) {
+        bool told = i % 2 == 0;
+        pt_step_t *s = &d.steps[d.nsteps++];
+        memset(s->a, 0, sizeof s->a); /* the circuit says nothing here: the meaning is only in the slot */
+        for (int k = 0; k < PT_SLOTS; k++)
+            s->slots[k] = 0.5f;
+        s->slots[0] = told ? 1 : 0;
+        s->line = (size_t)i;
+        s->label = told ? NOUN + i : WHAT;
+        s->pc = told ? 0 : 0.5f;
+        if (!told) {
+            pt_step_t *s2 = &d.steps[d.nsteps++];
+            *s2 = *s;
+            s2->t = 1, s2->ns = 1, s2->said[0] = WHAT;
+            s2->label = NOUN + i, s2->pc = 0;
+        }
+    }
+    pointer_t *p = xmalloc(sizeof *p);
+    pt_fit(p, &d, (size_t)-1);
+    const pt_line_t *pl = &d.lines[LINES];
+    uint8_t a[PT_BITS] = {0};
+    float slots[PT_SLOTS], att[PT_MAXT];
+    for (int k = 0; k < PT_SLOTS; k++)
+        slots[k] = 0.5f;
+    slots[0] = 1;
+    float g_told = pt_forward(p, a, slots, pl, 0, NULL, 0, att);
+    int32_t w_told = pt_choose(pl, att, g_told);
+    slots[0] = 0;
+    float g_unk0 = pt_forward(p, a, slots, pl, 0, NULL, 0, att);
+    int32_t w_unk0 = pt_choose(pl, att, g_unk0);
+    int32_t said[1] = {WHAT};
+    float g_unk1 = pt_forward(p, a, slots, pl, 1, said, 1, att);
+    int32_t w_unk1 = pt_choose(pl, att, g_unk1);
+    CHECK(g_told < 0.5f && w_told == NOUN + LINES, "pointer, told: gate %.3f, names %d (want under 0.5, %d)", g_told,
+          w_told, NOUN + LINES);
+    CHECK(g_unk0 > 0.5f && w_unk0 < 0, "pointer, unknown, first word: gate %.3f, names %d (want the circuit's \"what\")",
+          g_unk0, w_unk0);
+    CHECK(g_unk1 < 0.5f && w_unk1 == NOUN + LINES, "pointer, unknown, second word: gate %.3f, names %d", g_unk1,
+          w_unk1);
+    printf("pointer: told copies first (gate %.2f), unknown says its own word first (gate %.2f) then copies (%.2f)\n",
+           g_told, g_unk0, g_unk1);
+    free(p);
+    pt_data_free(&d);
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "three")) { /* only the measure (for comparing builds) */
@@ -507,6 +569,7 @@ int main(int argc, char **argv)
     learner_free(l);
     memory_tests();
     ngram_tests();
+    pointer_tests();
     three_words();
     printf("%s\n", fails ? "learner_test: FAILED" : "learner_test: all checks passed");
     return fails ? 1 : 0;

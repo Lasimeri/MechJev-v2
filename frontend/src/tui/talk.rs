@@ -11,10 +11,23 @@ use serde_json::Value;
 
 use super::editor::Editor;
 
-/// How many turns are kept on screen.
+/// How many turns (and activity entries) are kept on screen.
 const KEEP: usize = 40;
 /// How often the learner's files are looked at.
 pub const POLL_FILES: Duration = Duration::from_millis(400);
+
+/// The harness's directory, where every learner and the teacher put what
+/// they do (activity.h): `$MJ2_HARNESS`, else the default data directory,
+/// whatever `$MJ2_DATA` says.
+pub fn harness_dir() -> PathBuf {
+    if let Some(d) = std::env::var_os("MJ2_HARNESS").filter(|v| !v.is_empty()) {
+        return PathBuf::from(super::app::expand_home(&d.to_string_lossy()));
+    }
+    if let Some(x) = std::env::var_os("XDG_DATA_HOME").filter(|v| !v.is_empty()) {
+        return PathBuf::from(x).join("mechjev-v2");
+    }
+    PathBuf::from(std::env::var_os("HOME").unwrap_or_default()).join(".local/share/mechjev-v2")
+}
 
 /// The learner's data directory, as the learner finds it (learner_main.c):
 /// `$MJ2_DATA`, else `$XDG_DATA_HOME/mechjev-v2`, else
@@ -35,6 +48,11 @@ pub struct Talk {
     pub alone: bool,
     /// The last turns' records, oldest first.
     pub turns: Vec<Value>,
+    /// Everything done with MechJev, oldest first (`activity.jsonl` in the
+    /// harness's directory): every learner's turns and probes, a test's
+    /// too, and the teacher's verdicts. The conversation shows these.
+    pub activity: Vec<Value>,
+    activity_len: u64,
     /// The last probe's rows (probes.jsonl): the circuit alone on the fixed
     /// questions.
     pub probes: Vec<Value>,
@@ -60,6 +78,8 @@ impl Default for Talk {
             input: Editor::new(true),
             alone: false,
             turns: Vec::new(),
+            activity: Vec::new(),
+            activity_len: u64::MAX,
             probes: Vec::new(),
             probes_len: u64::MAX,
             pending: None,
@@ -88,6 +108,18 @@ impl Talk {
             let text = std::fs::read_to_string(dir.join("turns.jsonl")).unwrap_or_default();
             let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
             self.turns = lines[lines.len().saturating_sub(KEEP)..]
+                .iter()
+                .filter_map(|l| serde_json::from_str(l).ok())
+                .collect();
+            changed = true;
+        }
+        let act = harness_dir().join("activity.jsonl");
+        let alen = std::fs::metadata(&act).map_or(0, |m| m.len());
+        if alen != self.activity_len {
+            self.activity_len = alen;
+            let text = std::fs::read_to_string(&act).unwrap_or_default();
+            let lines: Vec<&str> = text.lines().filter(|l| !l.trim().is_empty()).collect();
+            self.activity = lines[lines.len().saturating_sub(KEEP * 2)..]
                 .iter()
                 .filter_map(|l| serde_json::from_str(l).ok())
                 .collect();
@@ -136,6 +168,46 @@ pub fn scored_words(turn: &Value) -> String {
         }
     }
     out.join("  ")
+}
+
+/// The words of a reply the pointer named, copied from the person's line
+/// (the trace's `from: "pointer"`; pointer.md).
+pub fn copied(turn: &Value) -> Vec<String> {
+    turn["trace"]
+        .as_array()
+        .map(Vec::as_slice)
+        .unwrap_or_default()
+        .iter()
+        .filter(|s| s["from"].as_str() == Some("pointer"))
+        .filter_map(|s| s["pick"].as_str().map(String::from))
+        .collect()
+}
+
+/// The teacher's row (lessons.jsonl, on the activity log) as one line:
+/// `told check: 0.88, passed (stage 5)`.
+pub fn lesson_line(e: &Value) -> String {
+    let s = |k: &str| e[k].as_str().unwrap_or("").to_string();
+    let verdict = |e: &Value| {
+        let check = e["check"].as_f64().map_or(String::new(), |c| format!("check {c:.2}, "));
+        let passed = if e["passed"].as_bool() == Some(true) { "passed" } else { "failed" };
+        format!("{check}{passed}")
+    };
+    match e["mode"].as_str().unwrap_or("") {
+        "promote" => format!("promoted {} -> {} ({} taught turns, {} checks)", s("from"), s("to"), e["taught"], e["checks"]),
+        "stage" => format!("the ladder is at {}", s("to")),
+        "measure" => format!("measured {}: \"{}\" -> \"{}\", {}", s("lesson"), s("line"), s("reply"), verdict(e)),
+        m => {
+            let refused = e["refused"].as_array().map_or(0, Vec::len);
+            let mut out = format!("{} {}: {}", s("lesson"), if m == "check" { "check, alone" } else { m }, verdict(e));
+            if let Some(st) = e["stage"].as_u64() {
+                out.push_str(&format!(" (stage {st})"));
+            }
+            if refused > 0 {
+                out.push_str(&format!(", {refused} lines of its own refused first"));
+            }
+            out
+        }
+    }
 }
 
 /// One probe question's repeats: how many passed every requirement, the mean

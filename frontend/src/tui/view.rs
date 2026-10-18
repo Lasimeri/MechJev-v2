@@ -991,10 +991,31 @@ fn talk(f: &mut Frame, a: &mut App) {
     let rows = h.saturating_sub(5); // header, input, status, keys, a gap
     // the conversation, as rows of spans
     let mut conv: Vec<Vec<Span>> = Vec::new();
-    for t in &a.talk.turns {
-        // who said it: the person, or the teacher (the turn record's speaker)
+    // everything done with MechJev (the activity log: every learner's turns
+    // and probes, a test's too, the teacher's verdicts), after this learner's
+    // turns from before the log began (its turns since are in both: the
+    // log's count of them is left off the end of turns.jsonl)
+    let in_both = a
+        .talk
+        .activity
+        .iter()
+        .filter(|e| e["kind"].as_str() == Some("turn") && e["instance"].is_null() && e["mode"].as_str() != Some("probe"))
+        .count();
+    let before = &a.talk.turns[..a.talk.turns.len().saturating_sub(in_both)];
+    let entries: Vec<&serde_json::Value> = before.iter().chain(a.talk.activity.iter()).collect();
+    for t in entries {
+        if t["kind"].as_str() == Some("lesson") {
+            for (i, l) in wrap(&super::talk::lesson_line(t), cw.saturating_sub(5)).into_iter().enumerate() {
+                conv.push(vec![faint(if i == 0 { "qwen " } else { "     " }), faint(l).italic()]);
+            }
+            conv.push(vec![]);
+            continue;
+        }
+        let mode = t["mode"].as_str().unwrap_or("taught");
+        // who said it: the person, the teacher (the turn record's speaker), a probe
         let who = match t["speaker"].as_str() {
             Some(s) => format!("{:<5}", s.to_lowercase().chars().take(4).collect::<String>()),
+            None if mode == "probe" => "prob ".to_string(),
             None => "you  ".to_string(),
         };
         for (i, l) in wrap(t["person"].as_str().unwrap_or(""), cw.saturating_sub(5)).into_iter().enumerate() {
@@ -1003,10 +1024,17 @@ fn talk(f: &mut Frame, a: &mut App) {
         let reply = t["reply"].as_str().unwrap_or("");
         let reply = if reply.is_empty() { "(no words yet)" } else { reply };
         for (i, l) in wrap(reply, cw.saturating_sub(5)).into_iter().enumerate() {
-            let who = if t["mode"].as_str() == Some("alone") { "solo " } else { "it   " };
+            let who = if mode == "taught" { "it   " } else { "solo " };
             conv.push(vec![dim(if i == 0 { who } else { "     " }), text(l).bold()]);
         }
         let mut note = super::talk::scored_words(t);
+        if let Some(i) = t["instance"].as_str() {
+            note = if note.is_empty() { format!("on {i}") } else { format!("on {i}  · {note}") };
+        }
+        let copied = super::talk::copied(t);
+        if !copied.is_empty() {
+            note.push_str(&format!("  · copied from the line: {}", copied.join(" ")));
+        }
         if let Some(c) = t["coherence_final"].as_f64() {
             note.push_str(&format!("  · coherence {c:.2}"));
         }
@@ -1055,7 +1083,9 @@ fn talk(f: &mut Frame, a: &mut App) {
         }
         let so_far = a.talk.speaking.clone().unwrap_or_default();
         let it = if mode == "taught" { "it   " } else { "solo " };
-        conv.push(vec![dim(it), text(so_far).bold(), dim(format!(" {s}"))]);
+        // a learner run elsewhere (a test, an A/B) says which it is
+        let on = live.and_then(|l| l["instance"].as_str()).map_or(String::new(), |i| format!("  on {i}"));
+        conv.push(vec![dim(it), text(so_far).bold(), dim(format!(" {s}{on}"))]);
     }
     if conv.is_empty() {
         conv.push(vec![dim("say something below: it starts with no words, and learns them from you")]);
