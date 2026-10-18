@@ -1011,6 +1011,13 @@ fn talk(f: &mut Frame, a: &mut App) {
             conv.push(vec![]);
             continue;
         }
+        // a gated turn's tries, before the turn they end in
+        if t["kind"].as_str() == Some("try") {
+            for (i, l) in wrap(&super::talk::try_line(t), cw.saturating_sub(5)).into_iter().enumerate() {
+                conv.push(vec![faint(if i == 0 { "solo " } else { "     " }), faint(l)]);
+            }
+            continue;
+        }
         let mode = t["mode"].as_str().unwrap_or("taught");
         // who said it: the person, the teacher (the turn record's speaker), a probe
         let who = match t["speaker"].as_str() {

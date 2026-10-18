@@ -65,6 +65,13 @@ typedef struct {
     bool persona; /* the conversation says who MechJev is (PERSONA; MJ2_PERSONA) */
     const char *extra_check; /* the teacher's stage check for this turn, judged as one more requirement; NULL: none */
     bool copy; /* the pointer: adaptive attention over the person's line may name the word (pointer.h; MJ2_COPY) */
+    /* MechJev's gated networks make every word, taught turns too: the
+     * pointer, the circuit's code match, the n-gram only among the circuit's
+     * own best; up to GATED_TRIES replies judged whole (the requirements and
+     * the stage check), the first accepted kept; never the engine's choice
+     * (the user's ask, 2026-10-18; MJ2_GATED; speak.md, "Gated") */
+    bool gated;
+    const char *instance; /* this learner's name in the harness, for its tries (activity.h); NULL: its own */
     sampling_t sampling;
     /* Called with the reply so far after every word (a terminal shows it live). */
     void (*on_word)(void *ud, const char *reply_so_far);

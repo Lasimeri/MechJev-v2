@@ -83,6 +83,7 @@ typedef struct {
     ngram_t ng;        /* the meaning-gated n-gram memory, made from turns.jsonl at every start (ngram.h) */
     float ng_weight;   /* its share of a word's probability, times its gate; 0: off (configuration) */
     pointer_t pt;      /* adaptive attention over the person's line, made from turns.jsonl at every start (pointer.h) */
+    bool hinge;        /* learn by a margin on the code-match scores, never toward the engine's probabilities (MJ2_GATED) */
     bool circuit_fresh; /* the circuit was made new at load (another input layout): learner circuit-rebuild */
 } learner_t;
 

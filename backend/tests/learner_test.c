@@ -478,6 +478,20 @@ int main(int argc, char **argv)
     spread("  held-out agreement        ", ag, SEEDS);
     spread("  with the variable blanked ", bl, SEEDS);
     spread("  with the word before blanked", np, SEEDS);
+    /* the same toy learned gated (l->hinge, MJ2_GATED): a margin on the code
+     * match, the engine's probabilities (q) never used; it must ground too */
+    double hg[SEEDS];
+    for (int s = 0; s < SEEDS; s++) {
+        learner_t *g = toy_learner(100 + (uint64_t)s);
+        g->hinge = true;
+        example_t train[60], held[40];
+        toy_sets(g, train, held);
+        learner_learn(g, train, 60, 1e9, PASSES);
+        hg[s] = learner_eval(g, held, 40, ABL_NONE).agree;
+        learner_free(g);
+    }
+    spread("  gated, by a margin        ", hg, SEEDS);
+    CHECK(mean(hg, SEEDS) >= 0.85, "the toy was not learned by a margin: mean %.3f", mean(hg, SEEDS));
     spread("  relaxed = discrete        ", gp, SEEDS);
     CHECK(mean(ag, SEEDS) >= 0.85, "the toy was not learned: mean %.3f", mean(ag, SEEDS));
     CHECK(mean(bl, SEEDS) <= 0.65, "blanking the variable should undo it: mean %.3f", mean(bl, SEEDS));

@@ -22,6 +22,7 @@ static const int LAYERS[] = {LAYER_W, LAYER_W, OUT_BITS};
 #define LR 0.01f       /* Adam, constant, as the paper trains */
 #define CE_WEIGHT 0.5f /* the engine's choice against the whole speakable lexicon */
 #define RL_WEIGHT 1.0f /* the per-token reward term (RED), against the KL term's 1 */
+#define HINGE_MARGIN 1.0f /* gated: the accepted word's code match above another's, in score units (8 output bits) */
 #define PREV_DROPOUT 0.5 /* passes trained with the word before blanked */
 #define TERN 0.33f     /* latent embedding to ternary: above +TERN 1, below -TERN -1 */
 #define MEM_SEED 0x48444D454D4F5259ull /* "HDMEMORY": the memory's own stream of the seed */
@@ -497,6 +498,12 @@ static void reward_base(const learner_t *l, float *base)
 static void train_one(learner_t *l, const example_t *ex, uint64_t seed, const float *base, trace_t *t,
                       float **gw, float *gs, float *ge)
 {
+    /* Gated (l->hinge): only a word accepted in a reply that passed is
+     * learned; a failed reply teaches nothing (its words cannot be told
+     * apart from the judge's noise). An old example's word is the one the
+     * engine chose in a reply that passed; its probabilities are not used. */
+    if (l->hinge && (ex->failed || ex->top < 0))
+        return;
     uint8_t bits[N_IN];
     /* The word before blanked for PREV_DROPOUT of the passes (input dropout,
      * drawn from the pass's seed): the circuit must carry the reply through
@@ -513,6 +520,31 @@ static void train_one(learner_t *l, const example_t *ex, uint64_t seed, const fl
     size_t n = l->n;
     for (size_t i = 0; i < n; i++)
         gs[i] = 0;
+    if (l->hinge) {
+        /* A margin on the code match (multiclass hinge, Crammer and Singer
+         * 2001): the accepted word's score above the best other speakable
+         * word's, and above each word a rejected try said here instead
+         * (ex->opt), by HINGE_MARGIN. No distribution: what is pushed is
+         * only the words in the way. */
+        int32_t y = ex->top, rival = -1;
+        float sy = score_soft(&l->v[y], a), sr = -INFINITY;
+        for (size_t i = 0; i < n; i++) {
+            if ((int32_t)i == y || !lex_speakable(l, (int32_t)i))
+                continue;
+            float s = score_soft(&l->v[i], a);
+            if (s > sr)
+                sr = s, rival = (int32_t)i;
+        }
+        if (rival >= 0 && HINGE_MARGIN + sr - sy > 0)
+            gs[y] -= 1, gs[rival] += 1;
+        for (int k = 0; k < ex->n; k++) {
+            int32_t w = ex->opt[k];
+            if (w == y || w == rival || w < 0)
+                continue;
+            if (HINGE_MARGIN + score_soft(&l->v[w], a) - sy > 0)
+                gs[y] -= 1, gs[w] += 1;
+        }
+    } else {
     /* KL over the shown words */
     float s_opt[MAX_OPTS], mx = -INFINITY, z = 0;
     for (int k = 0; k < ex->n; k++) {
@@ -575,6 +607,7 @@ static void train_one(learner_t *l, const example_t *ex, uint64_t seed, const fl
                 gs[ex->opt[k]] += RL_WEIGHT * adv * (expf(s_r[k] - mr) / zr - (k == said_at));
         }
     }
+    } /* the engine's distribution, its choice and the reward: not when gated */
     /* back through the scores: to the output bits and (straight through the
      * ternary rounding) to the embeddings */
     float *ga = t->grad[N_LAYERS];

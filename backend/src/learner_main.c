@@ -228,6 +228,8 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
         s->min_p = strtod(v, NULL);
     if ((v = getenv("MJ2_REPEAT_PENALTY")) && *v)
         s->repeat_penalty = strtod(v, NULL);
+    if ((v = getenv("MJ2_GATED")) && *v)
+        c->cfg.gated = strcmp(v, "0") != 0;
     if ((v = getenv("MJ2_COPY")) && *v)
         c->cfg.copy = strcmp(v, "0") != 0;
     if ((v = getenv("MJ2_PERSONA")) && *v)
@@ -272,6 +274,10 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
     size_t ng_turns, ng_steps;
     if (speak_ngram_rebuild(c->l, &c->cfg, c->turns, &ng_turns, &ng_steps, err, errlen))
         return -1;
+    /* gated: the learner learns by a margin, never toward the engine's
+     * probabilities; its tries show in the harness under its name */
+    c->l->hinge = c->cfg.gated;
+    c->cfg.instance = c->name;
     /* how each word is written ("MechJev"), from the lines heard */
     size_t cs_lines;
     if (speak_casing_rebuild(c->l, c->turns, &cs_lines, err, errlen))
@@ -1252,6 +1258,7 @@ int main(int argc, char **argv)
             sb_printf(&nm, "%s %s", c.name, bind);
             free(c.name);
             c.name = sb_take(&nm);
+            c.cfg.instance = c.name;
         }
         rc = cmd_serve(&c, bind);
     } else {

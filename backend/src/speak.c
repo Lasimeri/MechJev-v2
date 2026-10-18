@@ -10,6 +10,7 @@
 #include <string.h>
 #include <time.h>
 
+#include "activity.h"
 #include "http.h"
 #include "util.h"
 
@@ -1355,6 +1356,319 @@ static int judge_teacher_check(const speak_cfg_t *cfg, const char *person, const
     return 0;
 }
 
+/* ---- gated (cfg.gated) ----------------------------------------------- */
+
+/* The user's ask (2026-10-18): "Rather than next word probabilities,
+ * utilize the gated networks of the analog LLM we've made", both the
+ * engine's choices and the mixing inside MechJev. Every word is MechJev's
+ * by gates; the engine perceives the reply as it grows and judges it whole
+ * (speak.md, "Gated"). */
+#define GATED_TRIES 3  /* replies tried in a taught turn, the first accepted kept */
+#define NG_GATE_ON 0.5 /* the n-gram says the word only with its gate this open... */
+#define NG_AMONG 3     /* ...and only when the word is among the circuit's own best matches */
+
+typedef struct {
+    int32_t first;   /* the first word, -1: the gates' own */
+    bool short_form; /* after the first word only a sentence's end, then the end */
+} plan_t;
+
+typedef struct {
+    char **said;
+    size_t t, words, nex;
+    bool ended;
+    example_t *ex;
+    hv_t *ctxs;
+    int32_t *labels;
+    double *coh;
+    bool *have;
+    json_t *trace;
+    int32_t first_alt; /* the circuit's best other first word (the third try's last resort) */
+} gen_t;
+
+static void gen_init(gen_t *g, size_t room)
+{
+    memset(g, 0, sizeof *g);
+    g->said = xcalloc(room + 1, sizeof *g->said);
+    g->ex = xcalloc(room + 1, sizeof *g->ex);
+    g->ctxs = xcalloc(room + 1, sizeof *g->ctxs);
+    g->labels = xcalloc(room + 1, sizeof *g->labels);
+    g->coh = xcalloc(room + 2, sizeof *g->coh);
+    g->have = xcalloc(room + 2, sizeof *g->have);
+    g->trace = jarr();
+    g->first_alt = -1;
+}
+
+static void gen_free(gen_t *g)
+{
+    free(g->said);
+    free(g->ex);
+    free(g->ctxs);
+    free(g->labels);
+    free(g->coh);
+    free(g->have);
+    json_free(g->trace);
+    memset(g, 0, sizeof *g);
+}
+
+/* One reply by MechJev's gates. At each word: the plan's, else the
+ * pointer's when its gate opens (pt_choose), else the n-gram's when its
+ * meaning gate is NG_GATE_ON open and the word is among the circuit's
+ * NG_AMONG best code matches (the one Markov-like source, kept below the
+ * circuit), else the circuit's best code match (score_bits; no
+ * distribution is mixed). The engine perceives the reply so far (the step
+ * variables) and chooses nothing. Each word becomes an example; whether it
+ * is learned is the judgment's (gated_tries). */
+static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *state, const float *slots0, size_t room,
+                          size_t cap, size_t li, char **heard, size_t nh, const pt_line_t *pl, plan_t plan, gen_t *g,
+                          cost_t *cost, char *err, size_t errlen)
+{
+    float slots[VAR_SLOTS];
+    memcpy(slots, slots0, sizeof slots);
+    int32_t start = lex_find(l, START), end = lex_find(l, END), prev = start;
+    if (cfg->on_word)
+        cfg->on_word(cfg->on_word_ud, "");
+    while (g->t < room && !(li == 0 && g->t > 0 && sentence_end(g->said[g->t - 1])) &&
+           (g->words < cap || (g->t > 0 && !sentence_end(g->said[g->t - 1]) && g->words < cap + 4))) {
+        size_t t = g->t;
+        double ts = now_ms();
+        uint64_t seed = clock_seed();
+        uint8_t bits[N_IN];
+        learner_inputs(l, slots, prev, (unsigned)t, seed, ABL_NONE, bits);
+        hv_t ctx;
+        learner_context(l, slots, (unsigned)t, heard, nh, &ctx);
+        bool allow_end = t > 0 && sentence_end(g->said[t - 1]);
+        int32_t ranked[MAX_OPTS * 2];
+        size_t got = learner_propose(l, bits, NULL, NULL, ranked, MAX_OPTS * 2, allow_end, NULL);
+        size_t nr = 0; /* the circuit's code matches, best first, the allowed words only */
+        for (size_t i = 0; i < got; i++)
+            if (allowed(l, g->said, t, ranked[i]))
+                ranked[nr++] = ranked[i];
+        json_t *step = jobj();
+        jobj_set(step, "t", ju64(t));
+        jobj_set(step, "seed_inputs", ju64(seed));
+        jobj_set(step, "circuit_top1", nr ? jstr(l->v[ranked[0]].word) : jnull());
+        int32_t word = -1;
+        const char *from = "circuit";
+        if (t == 0 && plan.first >= 0)
+            word = plan.first, from = "tried";
+        else if (plan.short_form && t == 1) {
+            for (size_t i = 0; i < nr && word < 0; i++)
+                if (sentence_end(l->v[ranked[i]].word))
+                    word = ranked[i];
+            if (word < 0)
+                word = lex_find(l, ".");
+            from = "short";
+        } else if (plan.short_form && t >= 2)
+            word = end, from = "short";
+        if (word < 0 && cfg->copy && pl->n) { /* the pointer */
+            uint8_t oa[OUT_BITS];
+            learner_out_bits(l, bits, oa);
+            int32_t sid[PT_SAID];
+            size_t nsid = 0;
+            for (size_t q = 0; q < t && nsid < PT_SAID; q++)
+                sid[nsid++] = lex_find(l, g->said[q]);
+            float att[PT_MAXT];
+            float pg = pt_forward(&l->pt, oa, slots, pl, t, sid, nsid, att);
+            int32_t w = pt_choose(pl, att, pg);
+            jobj_set(step, "pointer_gate", jf64(round(pg * 1e4) / 1e4));
+            if (w >= 0 && w != start && allowed(l, g->said, t, w))
+                word = w, from = "pointer";
+        }
+        if (word < 0 && nr) { /* the n-gram, only among the circuit's own best */
+            int32_t hist[NG_ORD];
+            for (size_t k = 0; k < NG_ORD; k++)
+                hist[k] = t + k >= NG_ORD ? lex_find(l, g->said[t + k - NG_ORD]) : start;
+            double *p = xcalloc(l->n ? l->n : 1, sizeof *p);
+            double gate = ng_predict(&l->ng, hist, slots, l->n, p);
+            int32_t nw = -1;
+            for (size_t i = 0; i < l->n; i++)
+                if (p[i] > 0 && (nw < 0 || p[i] > p[nw]))
+                    nw = (int32_t)i;
+            free(p);
+            jobj_set(step, "ngram_top", nw >= 0 ? jstr(l->v[nw].word) : jnull());
+            jobj_set(step, "ngram_gate", jf64(round(gate * 1e4) / 1e4));
+            for (size_t i = 0; i < nr && i < NG_AMONG && word < 0; i++)
+                if (gate >= NG_GATE_ON && ranked[i] == nw)
+                    word = nw, from = "ngram";
+        }
+        if (word < 0 && nr)
+            word = ranked[0], from = "circuit";
+        if (t == 0)
+            for (size_t i = 0; i < nr && g->first_alt < 0; i++)
+                if (ranked[i] != word)
+                    g->first_alt = ranked[i];
+        if (word < 0) {
+            jobj_set(step, "pick", jnull());
+            jobj_set(step, "note", jstr("no word it knows may come here"));
+            jarr_push(g->trace, step);
+            break;
+        }
+        float used[VAR_SLOTS];
+        memcpy(used, slots, sizeof used); /* what the circuit saw, before this step's answers */
+        json_t *step_vars = jobj();
+        if (ask_reply_state(l, cfg, state, g->said, t, slots, step_vars, &g->coh[t], cost, err, errlen)) {
+            json_free(step);
+            json_free(step_vars);
+            return -1;
+        }
+        g->have[t] = true;
+        g->ctxs[g->nex] = ctx;
+        g->labels[g->nex] = word;
+        example_t *e = &g->ex[g->nex++];
+        memcpy(e->vars, used, sizeof e->vars);
+        e->prev = prev;
+        e->pos = (uint16_t)t;
+        e->n = 1;
+        e->opt[0] = word;
+        e->top = e->said = word;
+        e->id = seed;
+        jobj_set(step, "pick", jstr(l->v[word].word));
+        jobj_set(step, "from", jstr(from));
+        jobj_set(step, "reply_vars", step_vars);
+        jobj_set(step, "ms", jf64(round(now_ms() - ts)));
+        jarr_push(g->trace, step);
+        if (word == end) {
+            g->ended = true;
+            break;
+        }
+        g->said[g->t++] = l->v[word].word;
+        g->words += !is_punct(l->v[word].word);
+        prev = word;
+        if (cfg->on_word) {
+            char *so_far = render_words(l, g->said, g->t);
+            cfg->on_word(cfg->on_word_ud, so_far);
+            free(so_far);
+        }
+    }
+    if (g->t && !g->have[g->t]) {
+        if (ask_reply_state(l, cfg, state, g->said, g->t, NULL, NULL, &g->coh[g->t], cost, err, errlen))
+            return -1;
+        g->have[g->t] = true;
+    }
+    return 0;
+}
+
+/* A taught turn by gates: up to GATED_TRIES replies, each judged whole as a
+ * turn is (the requirements, and the stage check in the teacher's framing),
+ * the first accepted kept, never the best scored. The tries: the gates'
+ * reply; its first word ended at once (the misses ran on: "Round it
+ * green." where "Round!" passes); another first word, the stage's shown
+ * words first, then the person's, then the circuit's next match (a word it
+ * never said can come only so: "Welcome", "Bye"). A check, a probe, or a
+ * turn that learns nothing has one try. The kept try's words are the
+ * examples, and a rejected try's word where it first parts from them goes
+ * with them as the one word beaten (no other credit can be told from the
+ * judge's noise). Out: the kept try in *out, its judgment, the tries. */
+static int gated_tries(learner_t *l, const speak_cfg_t *cfg, const char *state, const char *person,
+                       const float *slots0, size_t room, size_t cap, size_t li, char **heard, size_t nh,
+                       char **show_w, size_t ns_show, const pt_line_t *pl, gen_t *out, json_t **checks,
+                       json_t **truth_j, json_t **grammar_j, bool *failed, json_t **tries, cost_t *cost, char *err,
+                       size_t errlen)
+{
+    gen_t g[GATED_TRIES];
+    json_t *ck[GATED_TRIES], *tj[GATED_TRIES], *gj[GATED_TRIES];
+    bool fl[GATED_TRIES];
+    int ng = 0, accepted = -1;
+    size_t ntries = cfg->alone || cfg->probe || !cfg->learn ? 1 : GATED_TRIES;
+    *tries = jarr();
+    for (size_t k = 0; k < ntries && accepted < 0; k++) {
+        plan_t plan = {-1, false};
+        if (k == 1) {
+            if (!ng || g[0].t <= 2) /* the gates' reply was a word and a mark already */
+                continue;
+            plan.first = lex_find(l, g[0].said[0]);
+            plan.short_form = true;
+        } else if (k == 2) {
+            for (size_t pass = 0; pass < 2 && plan.first < 0; pass++) {
+                char **w = pass ? heard : show_w;
+                size_t n = pass ? nh : ns_show;
+                for (size_t i = 0; i < n && plan.first < 0; i++) {
+                    int32_t wi = lex_find(l, w[i]);
+                    bool tried = wi < 0 || is_punct(w[i]) || !allowed(l, NULL, 0, wi);
+                    for (int r = 0; r < ng && !tried; r++)
+                        tried = g[r].nex && g[r].ex[0].top == wi;
+                    if (!tried)
+                        plan.first = wi;
+                }
+            }
+            if (plan.first < 0 && ng && g[0].first_alt >= 0)
+                plan.first = g[0].first_alt;
+            if (plan.first < 0)
+                break;
+        }
+        gen_init(&g[ng], room);
+        if (gated_generate(l, cfg, state, slots0, room, cap, li, heard, nh, pl, plan, &g[ng], cost, err, errlen)) {
+            for (int r = 0; r <= ng; r++)
+                gen_free(&g[r]);
+            for (int r = 0; r < ng; r++)
+                json_free(ck[r]), json_free(tj[r]), json_free(gj[r]);
+            json_free(*tries);
+            return -1;
+        }
+        char *reply = render_words(l, g[ng].said, g[ng].t);
+        ck[ng] = jobj();
+        tj[ng] = jnull();
+        gj[ng] = jnull();
+        fl[ng] = false;
+        judge_reply(cfg, state, reply, cost, &fl[ng], ck[ng], &tj[ng], &gj[ng], err, errlen);
+        if (*reply && cfg->extra_check && *cfg->extra_check) {
+            double tp = 0;
+            bool ok = !judge_teacher_check(cfg, person, reply, cost, &tp, err, errlen) && tp >= 0.5;
+            fl[ng] |= !ok;
+            sb_t kk;
+            sb_init(&kk);
+            sb_printf(&kk, "The teacher's check: %s", cfg->extra_check);
+            jobj_set(ck[ng], kk.s, jf64(tp));
+            sb_free(&kk);
+        }
+        json_t *tr = jobj();
+        jobj_set(tr, "try", ju64((uint64_t)k + 1));
+        jobj_set(tr, "reply", jstr(reply));
+        jobj_set(tr, "accepted", jbool(!fl[ng]));
+        jobj_set(tr, "checks", jclone(ck[ng]));
+        jarr_push(*tries, tr);
+        /* the try, where the harness shows it (activity.h) */
+        json_t *a = jobj();
+        jobj_set(a, "kind", jstr("try"));
+        jobj_set(a, "instance", cfg->instance ? jstr(cfg->instance) : jnull());
+        jobj_set(a, "try", ju64((uint64_t)k + 1));
+        jobj_set(a, "person", jstr(person));
+        jobj_set(a, "reply", jstr(reply));
+        jobj_set(a, "accepted", jbool(!fl[ng]));
+        jobj_set(a, "checks", jclone(ck[ng]));
+        activity_append(a);
+        json_free(a);
+        free(reply);
+        if (!fl[ng])
+            accepted = ng;
+        ng++;
+    }
+    int c = accepted >= 0 ? accepted : 0;
+    /* the word each rejected try said where it first parts from the kept one */
+    for (int r = 0; accepted >= 0 && r < ng; r++) {
+        if (r == c)
+            continue;
+        size_t p = 0;
+        while (p < g[r].nex && p < g[c].nex && g[r].ex[p].top == g[c].ex[p].top)
+            p++;
+        if (p < g[r].nex && p < g[c].nex && g[c].ex[p].n < MAX_OPTS)
+            g[c].ex[p].opt[g[c].ex[p].n++] = g[r].ex[p].top;
+    }
+    *out = g[c];
+    *checks = ck[c];
+    *truth_j = tj[c];
+    *grammar_j = gj[c];
+    *failed = accepted < 0;
+    for (int r = 0; r < ng; r++)
+        if (r != c) {
+            gen_free(&g[r]);
+            json_free(ck[r]);
+            json_free(tj[r]);
+            json_free(gj[r]);
+        }
+    return 0;
+}
+
 int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *person, char **reply,
                json_t **record, char *err, size_t errlen)
 {
@@ -1474,7 +1788,26 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
      * cap of 3 cut "Hello! I am" off mid-sentence, 2026-10-17). */
     /* Level 0 ("a word or two") is one sentence: its first sentence end ends
      * it (the cap of 8 let "It. Plink? Yes! Feel that? ..." run on). */
-    while (t < room && !(li == 0 && t > 0 && sentence_end(said[t - 1])) &&
+    /* gated (cfg.gated): MechJev's gates make every word, the replies judged
+     * whole; the kept try takes the place of the step loop below */
+    json_t *tries_j = NULL, *g_checks = NULL, *g_truth = NULL, *g_grammar = NULL;
+    bool g_failed = false;
+    if (cfg->gated) {
+        gen_t kept_try;
+        if (gated_tries(l, cfg, state, person, slots, room, cap, li, heard, nh, show_w, ns_show, &pl, &kept_try,
+                        &g_checks, &g_truth, &g_grammar, &g_failed, &tries_j, &cost, err, errlen))
+            goto fail;
+        free(said), free(ex), free(ctxs), free(labels), free(coh), free(have), json_free(trace);
+        said = kept_try.said, ex = kept_try.ex, ctxs = kept_try.ctxs, labels = kept_try.labels;
+        coh = kept_try.coh, have = kept_try.have, trace = kept_try.trace;
+        t = kept_try.t, words = kept_try.words, nex = kept_try.nex, ended = kept_try.ended;
+        /* an accepted reply's words were MechJev's own and right: picked */
+        for (size_t k = 0; !g_failed && cfg->learn && !cfg->alone && k < nex; k++) {
+            l->v[ex[k].top].picked++;
+            l->steps++;
+        }
+    }
+    while (!cfg->gated && t < room && !(li == 0 && t > 0 && sentence_end(said[t - 1])) &&
            (words < cap || (t > 0 && !sentence_end(said[t - 1]) && words < cap + 4))) {
         double ts = now_ms();
         uint64_t seed = clock_seed();
@@ -1744,10 +2077,12 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
 
     /* The requirements: a Noul each about the finished reply. One below
      * 0.5 and the reply failed: its examples are kept, never learned from. */
-    json_t *checks = jobj(), *truth_j = jnull(), *grammar_j = jnull();
-    bool failed = false;
-    judge_reply(cfg, state, *reply, &cost, &failed, checks, &truth_j, &grammar_j, err, errlen);
-    if (*reply && cfg->extra_check && *cfg->extra_check) {
+    json_t *checks = cfg->gated ? g_checks : jobj(), *truth_j = cfg->gated ? g_truth : jnull();
+    json_t *grammar_j = cfg->gated ? g_grammar : jnull();
+    bool failed = cfg->gated && g_failed; /* gated: the kept try is judged already */
+    if (!cfg->gated)
+        judge_reply(cfg, state, *reply, &cost, &failed, checks, &truth_j, &grammar_j, err, errlen);
+    if (!cfg->gated && *reply && cfg->extra_check && *cfg->extra_check) {
         double tp = 0;
         bool ok = !judge_teacher_check(cfg, person, *reply, &cost, &tp, err, errlen) && tp >= 0.5;
         failed |= !ok;
@@ -1835,6 +2170,9 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     jobj_set(rec, "turn_vars", turn_vars);
     jobj_set(rec, "checks", checks);
     jobj_set(rec, "trace", trace);
+    jobj_set(rec, "gated", jbool(cfg->gated));
+    if (tries_j)
+        jobj_set(rec, "tries", tries_j); /* each try's reply and judgment, the kept one last accepted */
     *record = rec;
     if (!cfg->probe)
         history_add(h, person, *reply);
@@ -1851,6 +2189,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
 fail:
     json_free(trace);
     json_free(turn_vars);
+    json_free(tries_j);
     free(said);
     free(ex);
     free(ctxs);

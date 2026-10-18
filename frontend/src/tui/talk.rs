@@ -212,6 +212,28 @@ pub fn lesson_line(e: &Value) -> String {
     }
 }
 
+/// A gated turn's try (speak.c gated_tries, on the activity log) as one
+/// line: `try 2 "Round!" accepted`, or rejected with what failed it.
+pub fn try_line(e: &Value) -> String {
+    let on = e["instance"].as_str().map_or(String::new(), |i| format!("on {i}: "));
+    let reply = e["reply"].as_str().filter(|r| !r.is_empty()).unwrap_or("(no words)");
+    let verdict = if e["accepted"].as_bool() == Some(true) {
+        "accepted".to_string()
+    } else {
+        let failed: Vec<String> = e["checks"]
+            .as_object()
+            .map(|o| {
+                o.iter()
+                    .filter(|(_, v)| v.as_f64().is_some_and(|p| p < 0.5))
+                    .map(|(k, _)| k.trim_start_matches("The reply ").chars().take(36).collect())
+                    .collect()
+            })
+            .unwrap_or_default();
+        if failed.is_empty() { "rejected".to_string() } else { format!("rejected: {}", failed.join("; ")) }
+    };
+    format!("{on}try {} \"{reply}\" {verdict}", e["try"])
+}
+
 /// One probe question's repeats: how many passed every requirement, the mean
 /// coherence, and the answers.
 pub struct ProbeGroup {
