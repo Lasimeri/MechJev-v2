@@ -38,6 +38,7 @@ void speak_cfg_default(speak_cfg_t *c)
     c->grammar = true;
     c->persona = true; /* "No." to "Have you ever been to Zorvania?" with it, "Yes." without (speak.md) */
     c->copy = true; /* told, judged by the teacher: 8 of 12 with it, 0 of 12 without (pointer.md) */
+    c->gated = true; /* the user's choice, 2026-10-18: gates everywhere (cleared stages 41/51 right, 2 confidently wrong, against 25/25) */
     c->veto = true;
     c->abstain = true;
     c->sampling = (sampling_t){

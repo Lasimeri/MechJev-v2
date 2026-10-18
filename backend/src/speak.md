@@ -324,7 +324,8 @@ every requirement met.
 The user's ask (2026-10-18): "Rather than next word probabilities,
 utilize the gated networks of the analog LLM we've made", and, asked
 which, both: the engine's choice of MechJev's words in a taught turn, and
-the distributions mixed inside MechJev. With `MJ2_GATED=1`:
+the distributions mixed inside MechJev. On by default (the user's choice, after
+the measurements below; `MJ2_GATED=0` turns it off):
 
 - **Every word is MechJev's, by gates** (`gated_generate`). The pointer's
   word when its gate opens; else the n-gram's word when its meaning gate is

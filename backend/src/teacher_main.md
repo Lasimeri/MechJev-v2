@@ -35,3 +35,15 @@ stage 1/17 greet, a check of MechJev alone: Qwen says "Hi MechJev. How are you t
 
 and `promoted: greet -> feeling (after K taught turns, C checks)` when a
 stage is climbed.
+
+## Reviews
+
+Every `REVIEW_EVERY` (6) steps, when it is past the first stage and not
+re-teaching, the teacher checks MechJev alone at a random stage below the
+current one, on a new line it writes for that stage (`ladder_review`; a
+`review` row). Told was forgotten unseen once the ladder had moved on
+(2026-10-18: "Wet." and "MechJev!" to "The moon is round. Is the moon
+round?" where it had said "Round!"); the user chose that a failed review
+re-teaches. A failed review writes a `stage` row with `resume`: the ladder
+is at the reviewed stage again, taught and checked there as at any stage,
+and its promotion goes back to the `resume` stage (`resumed`), not up one.

@@ -196,7 +196,11 @@ pub fn lesson_line(e: &Value) -> String {
     let on = e["instance"].as_str().map_or(String::new(), |i| format!("on {i}: "));
     on + &match e["mode"].as_str().unwrap_or("") {
         "promote" => format!("promoted {} -> {} ({} taught turns, {} checks)", s("from"), s("to"), e["taught"], e["checks"]),
+        "stage" if !s("resume").is_empty() => {
+            format!("a review failed: back to {}, then {} once it passes", s("to"), s("resume"))
+        }
         "stage" => format!("the ladder is at {}", s("to")),
+        "review" => format!("review of {} (at {}), alone: {}", s("lesson"), s("at"), verdict(e)),
         "measure" => format!("measured {}: \"{}\" -> \"{}\", {}", s("lesson"), s("line"), s("reply"), verdict(e)),
         m => {
             let refused = e["refused"].as_array().map_or(0, Vec::len);

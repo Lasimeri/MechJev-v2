@@ -18,8 +18,8 @@
 #include <sys/stat.h>
 #include <time.h>
 
-#include "conf.h"
 #include "activity.h"
+#include "conf.h"
 #include "json.h"
 #include "teach.h"
 #include "util.h"
@@ -417,6 +417,11 @@ static int next_line(teach_ctx_t *c, const lesson_t *l, const char *goal, const 
 #define CHECK_EVERY 2 /* taught turns between checks of MechJev alone */
 #define PROMOTE 2     /* passed checks, of the last 3, that move it up */
 #define EXCHANGES 6   /* the stage's last exchanges Qwen is shown */
+/* A review every REVIEW_EVERY steps: a check of MechJev alone at a stage it
+ * passed already, a random one (the user's choice, 2026-10-18: told was
+ * forgotten unseen once the ladder had moved on); a failed one takes the
+ * ladder back to that stage, and its promotion back to where it was. */
+#define REVIEW_EVERY 6
 
 typedef struct {
     size_t stage;     /* its index in the lessons */
@@ -426,6 +431,8 @@ typedef struct {
     bool last[3];     /* the last checks, newest last */
     size_t nlast;
     char *exchanges;  /* its last exchanges, for Qwen's next line */
+    int resume;       /* re-teaching after a failed review: the stage to go back to, -1 none */
+    size_t since_review; /* steps (taught turns and checks) since the last review */
 } ladder_t;
 
 /* Where MechJev is, from lessons.jsonl: the stage the last promotion (or
@@ -433,6 +440,7 @@ typedef struct {
 static void ladder_read(teach_ctx_t *c, ladder_t *ld)
 {
     memset(ld, 0, sizeof *ld);
+    ld->resume = -1;
     json_t *rows = read_rows(c->lessons_log);
     size_t from = 0;
     for (size_t k = rows->n; k-- > 0;) {
@@ -442,8 +450,18 @@ static void ladder_read(teach_ctx_t *c, ladder_t *ld)
         if (i >= 0) {
             ld->stage = (size_t)i;
             from = k + 1;
+            /* moved back by a failed review: where to return once it passes */
+            const char *rs = !strcmp(m, "stage") ? str(r, "resume") : "";
+            ld->resume = *rs ? lessons_find(&c->ls, rs) : -1;
             break;
         }
+    }
+    /* the steps since the last review (or since the stage was reached) */
+    for (size_t k = rows->n; k-- > 0;) {
+        const char *m = str(rows->items[k], "mode");
+        if (!strcmp(m, "review") || (k < from && (!strcmp(m, "promote") || !strcmp(m, "stage"))))
+            break;
+        ld->since_review += !strcmp(m, "taught") || !strcmp(m, "check");
     }
     const char *name = c->ls.v[ld->stage].name;
     size_t ex[EXCHANGES], nex = 0;
@@ -488,12 +506,86 @@ static size_t passed_of_last(const ladder_t *ld)
     return n;
 }
 
-/* One turn on the ladder: a check of MechJev alone when one is due, else a
- * taught turn; both typed in the TUI, a new line Qwen writes each time. */
+/* A draw from the clock: which cleared stage a review takes. */
+static uint64_t clock_seed_teacher(void)
+{
+    struct timespec ts;
+    clock_gettime(CLOCK_REALTIME, &ts);
+    uint64_t s = (uint64_t)ts.tv_sec * 1000000000ull + (uint64_t)ts.tv_nsec;
+    return splitmix64(&s);
+}
+
+/* A review (REVIEW_EVERY): a check of MechJev alone at a stage below the
+ * current one, a random one, on a new line Qwen writes for it. Failed, the
+ * ladder goes back to that stage (a "stage" row with "resume", the stage
+ * it was at), and is taught there until it passes, then returns. */
+static int ladder_review(teach_ctx_t *c, const ladder_t *ld, char *err, size_t errlen)
+{
+    size_t at = (size_t)(clock_seed_teacher() % ld->stage);
+    const lesson_t *l = &c->ls.v[at];
+    const char *goal = l->held_goal ? l->held_goal : l->goal;
+    json_t *tests = tests_load(c), *avoid = jarr(), *refused = jarr();
+    char *recent = recent_lines(c, avoid);
+    char *line = NULL;
+    int rc = next_line(c, l, goal, tests, recent, avoid, NULL, refused, &line, err, errlen);
+    free(recent);
+    json_free(avoid);
+    json_free(tests);
+    if (rc) {
+        json_free(refused);
+        return -1;
+    }
+    printf("stage %zu/%zu %s, a review of %s: Qwen says \"%s\"\n", ld->stage + 1, c->ls.n,
+           c->ls.v[ld->stage].name, l->name, line);
+    fflush(stdout);
+    json_t *row = NULL;
+    rc = judged_try(c, l, line, true, &row, err, errlen);
+    free(line);
+    if (rc) {
+        json_free(refused);
+        return -1;
+    }
+    char when[32];
+    stamp(when, sizeof when);
+    jobj_set(row, "time", jstr(when));
+    jobj_set(row, "lesson", jstr(l->name));
+    jobj_set(row, "stage", ju64(at + 1));
+    jobj_set(row, "mode", jstr("review"));
+    jobj_set(row, "at", jstr(c->ls.v[ld->stage].name));
+    jobj_set(row, "refused", refused);
+    bool passed = boolean(row, "passed");
+    printf("  MechJev alone (review): \"%s\" check %.2f: %s\n", str(row, "reply"), jobj_get(row, "check")->f,
+           passed ? "PASS" : "fail, back to it");
+    log_row(c, row);
+    json_free(row);
+    if (!passed) {
+        json_t *r = jobj();
+        jobj_set(r, "time", jstr(when));
+        jobj_set(r, "mode", jstr("stage"));
+        jobj_set(r, "to", jstr(l->name));
+        jobj_set(r, "resume", jstr(c->ls.v[ld->stage].name));
+        jobj_set(r, "why", jstr("a review failed"));
+        log_row(c, r);
+        json_free(r);
+        printf("  the ladder goes back to %s, and returns to %s once it passes\n", l->name,
+               c->ls.v[ld->stage].name);
+    }
+    fflush(stdout);
+    return 0;
+}
+
+/* One turn on the ladder: a review when one is due, else a check of MechJev
+ * alone when one is due, else a taught turn; all typed in the TUI, a new
+ * line Qwen writes each time. */
 static int ladder_step(teach_ctx_t *c, char *err, size_t errlen)
 {
     ladder_t ld;
     ladder_read(c, &ld);
+    if (ld.stage > 0 && ld.resume < 0 && ld.since_review >= REVIEW_EVERY) {
+        int rc = ladder_review(c, &ld, err, errlen);
+        free(ld.exchanges);
+        return rc;
+    }
     const lesson_t *l = &c->ls.v[ld.stage];
     bool check = ld.nchecks == 0 || ld.since >= CHECK_EVERY;
     const char *goal = check && l->held_goal ? l->held_goal : l->goal;
@@ -564,18 +656,22 @@ static int ladder_step(teach_ctx_t *c, char *err, size_t errlen)
         }
         ld.last[ld.nlast++] = passed;
         if (passed_of_last(&ld) >= PROMOTE) {
-            if (ld.stage + 1 < c->ls.n) {
+            /* re-taught after a failed review: back to where it was */
+            size_t to = ld.resume >= 0 && (size_t)ld.resume > ld.stage ? (size_t)ld.resume : ld.stage + 1;
+            if (to < c->ls.n) {
                 json_t *p = jobj();
                 jobj_set(p, "time", jstr(when));
                 jobj_set(p, "mode", jstr("promote"));
                 jobj_set(p, "from", jstr(l->name));
-                jobj_set(p, "to", jstr(c->ls.v[ld.stage + 1].name));
+                jobj_set(p, "to", jstr(c->ls.v[to].name));
                 jobj_set(p, "taught", ju64(ld.taught));
                 jobj_set(p, "checks", ju64(ld.nchecks + 1));
+                if (to != ld.stage + 1)
+                    jobj_set(p, "resumed", jbool(true));
                 log_row(c, p);
                 json_free(p);
-                printf("  promoted: %s -> %s (after %zu taught turns, %zu checks)\n", l->name,
-                       c->ls.v[ld.stage + 1].name, ld.taught, ld.nchecks + 1);
+                printf("  promoted: %s -> %s (after %zu taught turns, %zu checks)%s\n", l->name, c->ls.v[to].name,
+                       ld.taught, ld.nchecks + 1, to != ld.stage + 1 ? ", back where it was" : "");
             } else
                 printf("  the top of the ladder: %s passed\n", l->name);
         }
