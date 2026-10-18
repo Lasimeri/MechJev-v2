@@ -62,6 +62,8 @@ typedef struct {
     bool truth;  /* judge the truth: no fact it was not told, no experience it could not have had (speak.md) */
     bool grammar; /* judge the grammar: a whole sentence, no word missing, or a bare short reply (speak.md) */
     bool phrases; /* the lookahead judges two-word phrases, not single words (speak.md; MJ2_PHRASES) */
+    bool persona; /* the conversation says who MechJev is (PERSONA; MJ2_PERSONA) */
+    const char *extra_check; /* the teacher's stage check for this turn, judged as one more requirement; NULL: none */
     sampling_t sampling;
     /* Called with the reply so far after every word (a terminal shows it live). */
     void (*on_word)(void *ud, const char *reply_so_far);

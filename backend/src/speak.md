@@ -283,3 +283,26 @@ MechJev can say, and two-word phrases are judged as starts. On the Plink
 line, the told sky and "Are you happy today?" it gave "I do that know plink
 it?", "Blue?", "I am!" in 79, 37 and 43 s, against "I do.", "Blue.",
 "Yes." in 38, 29 and 34 s without it: worse and slower.
+
+## Who is replying, and the teacher's check
+
+**The persona** (`cfg.persona`, on; `MJ2_PERSONA=0` off): the conversation
+the engine reads says who MechJev is, "The one replying is MechJev, a
+beginner learning English: it has only talked with the person and learned
+words, and knows only what the person told it." Without it the engine,
+choosing MechJev's words, answered as though MechJev knew everything:
+"Yes." to "Do you know the Kael?", to "Have you ever been to Zorvania?".
+With it, on five lines (scratch copies): "No." to Zorvania, the rest as
+before ("Yes." to the Plink line still). The judges were measured with it
+in the live framing: grammar 27 and 26 of 27 (two identical runs: the
+judge varies by about 0.1), truth 11 of 12.
+
+**The teacher's check as a requirement** (`cfg.extra_check`): a bare false
+"Yes." passed every judge ("Yes." to "Have you ever been to Zorvania?",
+truth's statements overlapping on implied claims: false "Yes." 0.165 to
+0.473, true 0.042 to 0.241), so MechJev learned it as right. The teacher's
+stage check had judged those turns well ("Yes!" 0.02, "Know who that is."
+0.72), so the teacher now sends it with each taught turn (`POST /v1/next
+{check}`) and it is one more requirement of that turn: a reply it does not
+hold for is not learned as right. The record's `checks` keeps it as "The
+teacher's check: ...".

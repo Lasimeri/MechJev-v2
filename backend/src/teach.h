@@ -72,7 +72,8 @@ int teacher_demonstrate(const teacher_t *t, const char *line, const char *show, 
  * seen on screen), the line typed and Enter, then the turn read from
  * turns.jsonl. Under the driver lock ($XDG_RUNTIME_DIR/mjev2-driver.lock):
  * no two drivers type at once. *rec is the turn record. */
-int teacher_say_in_tui(const teacher_t *t, const char *line, bool alone, const char *show, json_t **rec, char *err,
+int teacher_say_in_tui(const teacher_t *t, const char *line, bool alone, const char *show, const char *check,
+                       json_t **rec, char *err,
                        size_t errlen);
 
 /* Two lines the same but for marks, spaces and case. */

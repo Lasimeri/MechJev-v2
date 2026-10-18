@@ -35,6 +35,7 @@ void speak_cfg_default(speak_cfg_t *c)
     c->keep_drop = 0.05;
     c->truth = true;
     c->grammar = true;
+    c->persona = true; /* "No." to "Have you ever been to Zorvania?" with it, "Yes." without (speak.md) */
     c->sampling = (sampling_t){
         .temp = 0.5, .top_p = 0.95, .min_p = 0.05, .repeat_penalty = 1.2, .top_k = 75, .ties_only = true};
 }
@@ -319,11 +320,18 @@ char *render_words(char **w, size_t n)
 
 /* The conversation as the engine reads it: fixed for the whole turn, so
  * the engine keeps it prefilled and each word costs only its questions. */
-static char *conversation(const history_t *h, const char *person)
+/* persona: who MechJev is, for the engine choosing its words and judging
+ * them (MJ2_PERSONA): with nothing said of it, the engine chose "Yes." for
+ * MechJev to "Do you know the Kael?" (2026-10-17), as if it knew. */
+#define PERSONA "The one replying is MechJev, a beginner learning English: it has only talked with the person "\
+                "and learned words, and knows only what the person told it.\n"
+static char *conversation(const history_t *h, const char *person, bool persona)
 {
     sb_t b;
     sb_init(&b);
     sb_puts(&b, "A conversation in English. The person speaks; the reply is written one word at a time.\n");
+    if (persona)
+        sb_puts(&b, PERSONA);
     size_t from = h->n > HISTORY_TURNS ? h->n - HISTORY_TURNS : 0;
     /* the person's lines all, MechJev's own only the last REPLIES_SHOWN: its
      * earlier fragments steered the engine to more ("Know" first to "Do you
@@ -1179,7 +1187,7 @@ static void judge_reply(const speak_cfg_t *cfg, const char *state, const char *r
                         json_t *checks, json_t **truth_j, json_t **grammar_j, char *err, size_t errlen)
 {
     bool failed = !*reply;
-    if (*reply && (cfg->nchecks || cfg->truth || cfg->grammar)) {
+    if (*reply && (cfg->nchecks || cfg->truth || cfg->grammar || (cfg->extra_check && *cfg->extra_check))) {
         sb_t s2;
         sb_init(&s2);
         /* The reply judged by name: the conversation holds earlier "Reply:"
@@ -1216,6 +1224,16 @@ static void judge_reply(const speak_cfg_t *cfg, const char *state, const char *r
             snprintf(id, sizeof id, "t%zu", i);
             jobj_set(cq, id, q);
         }
+        if (cfg->extra_check && *cfg->extra_check) { /* the teacher's stage check (teach.md) */
+            json_t *q = jobj();
+            jobj_set(q, "type", jstr("noul"));
+            sb_t ci;
+            sb_init(&ci);
+            sb_printf(&ci, "About the newest reply only: %s", cfg->extra_check);
+            jobj_set(q, "instructions", jstr(ci.s));
+            sb_free(&ci);
+            jobj_set(cq, "x0", q);
+        }
         for (size_t i = 0; cfg->grammar && i < 2; i++) { /* grammar, two statements (GRAMMAR) */
             json_t *q = jobj();
             jobj_set(q, "type", jstr("noul"));
@@ -1238,6 +1256,16 @@ static void judge_reply(const speak_cfg_t *cfg, const char *state, const char *r
             double p = v && v->t == J_NUM ? v->f : 0;
             failed |= p < 0.5;
             jobj_set(checks, cfg->checks[i], jf64(p));
+        }
+        if (a2 && cfg->extra_check && *cfg->extra_check) {
+            json_t *v = jobj_get(jobj_get(a2, "x0"), "noul");
+            double p = v && v->t == J_NUM ? v->f : 0;
+            failed |= p < 0.5;
+            sb_t k;
+            sb_init(&k);
+            sb_printf(&k, "The teacher's check: %s", cfg->extra_check);
+            jobj_set(checks, k.s, jf64(p));
+            sb_free(&k);
         }
         if (a2 && cfg->grammar) {
             double gp[2];
@@ -1313,7 +1341,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
         learner_hear_as(l, heard, nh, cfg->parent ? PARENT_HEARD : 1);
     if (!cfg->probe)
         l->turns++;
-    char *state = conversation(h, person);
+    char *state = conversation(h, person, cfg->persona);
     /* the words it can say, for a question about what it knows ({words}) */
     sb_t known;
     sb_init(&known);
@@ -1896,7 +1924,7 @@ bool speak_sentence_end(const char *w) { return sentence_end(w); }
 
 uint64_t speak_clock_seed(void) { return clock_seed(); }
 
-char *speak_conversation(const history_t *h, const char *person) { return conversation(h, person); }
+char *speak_conversation(const history_t *h, const char *person) { return conversation(h, person, false); }
 
 json_t *speak_ask_rotations(const speak_cfg_t *cfg, const char *state, json_t *questions, size_t rotations,
                             json_t **resp, char *err, size_t errlen)

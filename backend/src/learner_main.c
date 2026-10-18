@@ -49,7 +49,7 @@ typedef struct {
     /* the next turn's settings (POST /v1/next, used once by the next
      * /v1/talk): the teacher typing in the TUI like a person, its turn
      * labelled, its answer words shown, or MechJev alone */
-    char *next_show, *next_speaker;
+    char *next_show, *next_speaker, *next_check; /* next_check: the teacher's stage check, one more requirement */
     bool next_alone;
 } ctx_t;
 
@@ -216,6 +216,8 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
         s->min_p = strtod(v, NULL);
     if ((v = getenv("MJ2_REPEAT_PENALTY")) && *v)
         s->repeat_penalty = strtod(v, NULL);
+    if ((v = getenv("MJ2_PERSONA")) && *v)
+        c->cfg.persona = strcmp(v, "0") != 0;
     if ((v = getenv("MJ2_PHRASES")) && *v)
         c->cfg.phrases = strcmp(v, "0") != 0;
     if ((v = getenv("MJ2_GRAMMAR")) && *v)
@@ -346,7 +348,8 @@ static void turn_end(const ctx_t *c)
 
 /* One turn; alone: the circuit speaks by itself this turn (the engine
  * perceives and judges, chooses no word, nothing is learned). */
-static int one_turn(ctx_t *c, const char *message, bool alone, const char *show, const char *speaker, char **reply,
+static int one_turn(ctx_t *c, const char *message, bool alone, const char *show, const char *speaker, const char *check,
+                    char **reply,
                     json_t **rec, char *err, size_t errlen)
 {
     pthread_mutex_lock(&c->mu);
@@ -354,6 +357,7 @@ static int one_turn(ctx_t *c, const char *message, bool alone, const char *show,
     cfg.alone = cfg.alone || alone;
     cfg.show = show; /* a teacher's demonstration: the answer's words offered too */
     cfg.parent = !(speaker && *speaker); /* no one else named: the person at the TUI, the parent */
+    cfg.extra_check = check; /* the teacher's stage check: a requirement for this turn too */
     if (show && *show && !cfg.alone) { /* shown is heard: the words enter its lexicon, so they can be offered */
         char **w;
         size_t n = split_words(show, &w);
@@ -599,7 +603,7 @@ static int cmd_talk(ctx_t *c, int argc, char **argv)
         }
         char *reply;
         json_t *rec;
-        if (one_turn(c, m.s, false, NULL, NULL, &reply, &rec, err, sizeof err)) {
+        if (one_turn(c, m.s, false, NULL, NULL, NULL, &reply, &rec, err, sizeof err)) {
             fprintf(stderr, "error: %s\n", err);
             return 1;
         }
@@ -624,7 +628,7 @@ static int cmd_talk(ctx_t *c, int argc, char **argv)
             continue;
         char *reply;
         json_t *rec;
-        if (one_turn(c, line, false, NULL, NULL, &reply, &rec, err, sizeof err)) {
+        if (one_turn(c, line, false, NULL, NULL, NULL, &reply, &rec, err, sizeof err)) {
             fprintf(stderr, "error: %s\n", err);
             continue;
         }
@@ -808,6 +812,9 @@ static void *serve_conn(void *arg)
             free(c->next_speaker);
             c->next_show = sh && sh->t == J_STR ? xstrdup(sh->s) : NULL;
             c->next_speaker = sp && sp->t == J_STR ? xstrdup(sp->s) : NULL;
+            const json_t *ck = jobj_get(v, "check");
+            free(c->next_check);
+            c->next_check = ck && ck->t == J_STR ? xstrdup(ck->s) : NULL;
             c->next_alone = al && al->t == J_BOOL && al->b;
             /* who will speak, for the TUI from the first frame of the turn */
             char *spf = join(c->dir, "speaker.txt");
@@ -855,16 +862,17 @@ static void *serve_conn(void *arg)
             const json_t *sh = jobj_get(v, "show");
             /* the pending settings from POST /v1/next, used by this turn once */
             pthread_mutex_lock(&c->mu);
-            char *n_show = c->next_show, *n_speaker = c->next_speaker;
+            char *n_show = c->next_show, *n_speaker = c->next_speaker, *n_check = c->next_check;
             bool n_alone = c->next_alone;
-            c->next_show = c->next_speaker = NULL;
+            c->next_show = c->next_speaker = c->next_check = NULL;
             c->next_alone = false;
             pthread_mutex_unlock(&c->mu);
             const char *show = sh && sh->t == J_STR ? sh->s : n_show;
-            int trc = one_turn(c, m->s, (al && al->t == J_BOOL && al->b) || n_alone, show, n_speaker, &reply, &rec,
+            int trc = one_turn(c, m->s, (al && al->t == J_BOOL && al->b) || n_alone, show, n_speaker, n_check, &reply, &rec,
                                err, sizeof err);
             free(n_show);
             free(n_speaker);
+            free(n_check);
             if (trc)
                 reply_json(k->fd, 502, message(err));
             else {

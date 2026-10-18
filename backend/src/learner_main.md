@@ -28,7 +28,7 @@ the teacher:
 | `POST /v1/hear {text}` | English text read |
 | `POST /v1/probe [{ngram_weight}]` | the fixed probes, a row each (`probes.jsonl`); `ngram_weight` sets the n-gram memory's weight for these probes only (tools/ngram_ab.sh) |
 | `POST /v1/probe {message}` | that message to the circuit alone, from an empty conversation, nothing heard, learned or counted: the teacher's try; the turn record back |
-| `POST /v1/next {show, alone, speaker}` | the next `/v1/talk` turn's settings, used by it once: the teacher, typing its line in the TUI as a person would, sets its answer words (`show`), MechJev alone for a check, and who speaks (`speaker`, "Qwen": the turn record's `speaker`, the TUI's label) |
+| `POST /v1/next {show, alone, speaker, check}` | the next `/v1/talk` turn's settings, used by it once: the teacher, typing its line in the TUI as a person would, sets its answer words (`show`), MechJev alone for a check, who speaks (`speaker`, "Qwen": the turn record's `speaker`, the TUI's label), and its stage check (`check`, one more requirement of that turn) |
 
 One process at a time writes the learner's data: `talk`, `hear`, `probe`,
 `serve`, the rebuilds and `reset` hold an exclusive lock (flock on `lock` in

@@ -84,7 +84,7 @@ The learner's name, for the name stages, is MechJev (the user's).
 4. **Typed in the TUI** (`teacher_say_in_tui`), as the user asked: "The
    local teaching model needs to show up in the harness just like when you
    type for me". It tells MechJev's server the next turn's settings
-   (`POST /v1/next {alone, show, speaker: "Qwen"}`, used by that turn
+   (`POST /v1/next {alone, show, speaker: "Qwen", check}`, used by that turn
    once), puts the TUI on its talk screen and in the mode the turn needs
    (F2, seen on the screen: the circuit alone for a check, taught
    otherwise), types the line and Enter, and reads the turn from
@@ -93,7 +93,10 @@ The learner's name, for the name stages, is MechJev (the user's).
    `speaker`). Under the driver lock, so no two drivers type at once.
    `MJEV2_PANE` names the pane (`jev2.0`); empty, the turns go through the
    API, unseen.
-5. **Judged**: the stage's check on MechJev's reply, and its requirements.
+5. **Judged**: the stage's check on MechJev's reply, and its requirements;
+   a taught turn's requirements include the stage's check itself (sent with
+   the turn), so a reply the check does not hold for is not learned as
+   right (speak.md).
 6. **Up a stage** when 2 of its last 3 checks passed (`PROMOTE`): a
    `promote` row.
 

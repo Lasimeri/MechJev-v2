@@ -116,7 +116,7 @@ static int judged_try(teach_ctx_t *c, const lesson_t *l, const char *line, bool 
                       size_t errlen)
 {
     json_t *rec = NULL;
-    if (in_tui && c->t.pane ? teacher_say_in_tui(&c->t, line, true, NULL, &rec, err, errlen)
+    if (in_tui && c->t.pane ? teacher_say_in_tui(&c->t, line, true, NULL, NULL, &rec, err, errlen)
                             : teacher_try(&c->t, line, &rec, err, errlen))
         return -1;
     const char *reply = str(rec, "reply");
@@ -468,7 +468,7 @@ static int ladder_step(teach_ctx_t *c, char *err, size_t errlen)
         rc = judged_try(c, l, line, true, &row, err, errlen);
     else {
         json_t *rec = NULL;
-        rc = c->t.pane ? teacher_say_in_tui(&c->t, line, false, l->show, &rec, err, errlen)
+        rc = c->t.pane ? teacher_say_in_tui(&c->t, line, false, l->show, l->check, &rec, err, errlen)
                        : teacher_demonstrate(&c->t, line, l->show, &rec, err, errlen);
         double p = 0;
         const char *reply = rc ? "" : str(rec, "reply");

@@ -259,14 +259,22 @@ bool teacher_same_text(const char *a, const char *b)
 
 /* The distinct words of s, lower case (letters, digits, apostrophes), at
  * most max of them; how many. */
-static size_t word_set(const char *s, char words[][32], size_t max)
+static size_t word_set_as(const char *s, char words[][32], size_t max, bool skip_names)
 {
     size_t n = 0;
+    bool start = true; /* at the start of a sentence */
     while (*s && n < max) {
-        while (*s && !isalnum((unsigned char)*s))
+        while (*s && !isalnum((unsigned char)*s)) {
+            if (*s == '.' || *s == '?' || *s == '!')
+                start = true;
             s++;
+        }
         if (!*s)
             break;
+        /* a capitalized word inside a sentence is a name: Qwen's made-up
+         * names made one frame read as new lines ("Do you know the Fael?",
+         * "... the Kael?", 2026-10-17), so they are set aside */
+        bool name = skip_names && !start && isupper((unsigned char)*s);
         char w[32];
         size_t k = 0;
         while (*s && (isalnum((unsigned char)*s) || *s == '\'')) {
@@ -275,6 +283,9 @@ static size_t word_set(const char *s, char words[][32], size_t max)
             s++;
         }
         w[k] = 0;
+        start = false;
+        if (name)
+            continue;
         bool seen = false;
         for (size_t i = 0; i < n && !seen; i++)
             seen = !strcmp(words[i], w);
@@ -282,6 +293,14 @@ static size_t word_set(const char *s, char words[][32], size_t max)
             memcpy(words[n++], w, k + 1);
     }
     return n;
+}
+
+/* The distinct words of s, lower case, names inside a sentence set aside;
+ * all of them when nothing else is left. */
+static size_t word_set(const char *s, char words[][32], size_t max)
+{
+    size_t n = word_set_as(s, words, max, true);
+    return n ? n : word_set_as(s, words, max, false);
 }
 
 double teacher_word_overlap(const char *a, const char *b)
@@ -415,7 +434,8 @@ static char *last_line(const char *path)
 #define SAY_ALONE "say (circuit alone) \xe2\x80\xba" /* the same, F2 on: the circuit alone */
 #define TURN_WAIT_S 1800                           /* a turn of many words is many minutes */
 
-int teacher_say_in_tui(const teacher_t *t, const char *line, bool alone, const char *show, json_t **rec, char *err,
+int teacher_say_in_tui(const teacher_t *t, const char *line, bool alone, const char *show, const char *check,
+                       json_t **rec, char *err,
                        size_t errlen)
 {
     *rec = NULL;
@@ -436,6 +456,8 @@ int teacher_say_in_tui(const teacher_t *t, const char *line, bool alone, const c
     /* the next turn's settings */
     json_t *nx = jobj();
     jobj_set(nx, "alone", jbool(alone));
+    if (check && *check && !alone) /* the stage check: a requirement of this taught turn too */
+        jobj_set(nx, "check", jstr(check));
     if (show && *show && !alone)
         jobj_set(nx, "show", jstr(show));
     if (t->speaker)
