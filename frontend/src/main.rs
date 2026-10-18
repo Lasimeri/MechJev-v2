@@ -39,19 +39,20 @@ enum Cmd {
     },
     /// The fixed probe questions to the circuit alone (probes.jsonl).
     Probe,
-    /// Lessons from the teacher, Qwen teaching MechJev from outside
-    /// (backend/build/teacher, lessons.jsonl): N it
-    /// chooses, every lesson measured on a fresh line, or one lesson.
+    /// Turns up the teacher's ladder, Qwen teaching MechJev from outside
+    /// (backend/build/teacher, lessons.txt in order, lessons.jsonl): each
+    /// turn a new line typed in the TUI, a check of MechJev alone or a
+    /// taught turn.
     Teach {
-        /// How many lessons the teacher chooses.
+        /// How many turns.
         #[arg(default_value_t = 1)]
-        lessons: u64,
+        turns: u64,
         /// Measure MechJev on the frozen test lines (teacher freeze); teach nothing.
         #[arg(long)]
         measure: bool,
-        /// This lesson (a name in lessons.txt).
+        /// Move the ladder to this stage first (a name in lessons.txt).
         #[arg(long)]
-        lesson: Option<String>,
+        stage: Option<String>,
     },
     /// What the learner knows.
     Stats,
@@ -71,7 +72,7 @@ fn main() {
         None => Err("mjev2 alone opens the TUI in a terminal; see mjev2 --help".into()),
         Some(Cmd::Tui { file }) => mjev2::tui::app::run(Client::from_env(), file),
         Some(Cmd::Talk { message, json }) => talk(&message.join(" "), json),
-        Some(Cmd::Teach { lessons, measure, lesson }) => teach(lessons, measure, lesson.as_deref()),
+        Some(Cmd::Teach { turns, measure, stage }) => teach(turns, measure, stage.as_deref()),
         Some(Cmd::Probe) => probe(),
         Some(Cmd::Stats) => Learner::new()
             .ensure()
@@ -134,22 +135,26 @@ fn probe() -> Result<(), String> {
 
 /// The teacher, Qwen teaching MechJev from outside (backend/build/teacher):
 /// the engine and MechJev's server up first, then its own output, live.
-fn teach(lessons: u64, measure: bool, lesson: Option<&str>) -> Result<(), String> {
+fn teach(turns: u64, measure: bool, stage: Option<&str>) -> Result<(), String> {
     let client = Client::from_env();
     if !client.healthy() {
         engine::ensure(&client)?;
     }
     Learner::new().ensure()?;
-    let mut cmd = std::process::Command::new(engine::teacher());
-    if measure {
-        cmd.arg("measure");
-    } else {
-        cmd.arg("teach").arg(lessons.to_string());
-        if let Some(name) = lesson {
-            cmd.arg("--lesson").arg(name);
+    let run = |args: &[&str]| -> Result<std::process::ExitStatus, String> {
+        std::process::Command::new(engine::teacher())
+            .args(args)
+            .status()
+            .map_err(|e| format!("{}: {e}", engine::teacher().display()))
+    };
+    if let Some(name) = stage {
+        let st = run(&["stage", name])?;
+        if !st.success() {
+            return Err(format!("the teacher has no stage {name}: {st}"));
         }
     }
-    let status = cmd.status().map_err(|e| format!("{}: {e}", engine::teacher().display()))?;
+    let n = turns.to_string();
+    let status = if measure { run(&["measure"])? } else { run(&["teach", &n])? };
     if status.success() {
         Ok(())
     } else {

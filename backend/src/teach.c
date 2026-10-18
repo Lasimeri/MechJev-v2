@@ -5,6 +5,10 @@
 
 #include <ctype.h>
 #include <time.h>
+#include <fcntl.h>
+#include <sys/file.h>
+#include <sys/wait.h>
+#include <unistd.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -160,7 +164,7 @@ int teacher_write(const teacher_t *t, const char *goal, const char *context, cha
     sb_init(&u);
     sb_printf(&u, "What your next line should do: %s", goal);
     if (context && *context)
-        sb_printf(&u, "\n\n%s\n\nSay it in your own words, not as you have said it before.", context);
+        sb_printf(&u, "\n\n%s\n\nWrite a new line toward the same goal, in other words than every line above.", context);
     json_t *req = jobj();
     jobj_set(req, "system", jstr(WRITER));
     jobj_set(req, "user", jstr(u.s));
@@ -190,36 +194,6 @@ int teacher_write(const teacher_t *t, const char *goal, const char *context, cha
     }
     *line = xstrdup(b);
     free(s);
-    return 0;
-}
-
-int teacher_choose(const teacher_t *t, const lessons_t *ls, const char *record, size_t *lesson, char *err,
-                   size_t errlen)
-{
-    sb_t ins;
-    sb_init(&ins);
-    sb_printf(&ins, "You teach English to MechJev, a beginner. The lessons, and what it has shown in each "
-                    "so far:\n%s\nWhich lesson should you teach next? Choose the one it needs most now; a lesson "
-                    "that has not worked the same way twice running can wait while you teach another.",
-              record);
-    json_t *q = jobj(), *c = jobj();
-    jobj_set(q, "type", jstr("choice"));
-    jobj_set(q, "instructions", jstr(ins.s));
-    sb_free(&ins);
-    for (size_t i = 0; i < ls->n; i++)
-        jobj_set(c, ls->v[i].name, jnull());
-    jobj_set(q, "criteria", c);
-    json_t *resp = NULL;
-    const json_t *a = decide(t, "A teacher plans an English lesson for a beginner.", "lesson", q, &resp, err, errlen);
-    const json_t *ch = a ? jobj_get(a, "choice") : NULL;
-    int i = ch && ch->t == J_STR ? lessons_find(ls, ch->s) : -1;
-    json_free(resp);
-    if (i < 0) {
-        if (a)
-            snprintf(err, errlen, "the engine chose no lesson");
-        return -1;
-    }
-    *lesson = (size_t)i;
     return 0;
 }
 
@@ -281,4 +255,187 @@ bool teacher_same_text(const char *a, const char *b)
         if (tolower((unsigned char)*a++) != tolower((unsigned char)*b++))
             return false;
     }
+}
+
+/* ---- typing in the TUI ------------------------------------------------- */
+
+/* tmux with these arguments (no shell: a line is passed as it is); its
+ * output into out when out is not NULL. 0 when tmux succeeded. */
+static int tmux(char *const argv[], char *out, size_t outlen)
+{
+    int fd[2];
+    if (out && pipe(fd))
+        return -1;
+    pid_t p = fork();
+    if (p < 0)
+        return -1;
+    if (p == 0) {
+        int nul = open("/dev/null", O_RDWR);
+        if (out) {
+            dup2(fd[1], 1);
+            close(fd[0]);
+            close(fd[1]);
+        } else
+            dup2(nul, 1);
+        dup2(nul, 2);
+        execvp("tmux", argv);
+        _exit(127);
+    }
+    if (out) {
+        close(fd[1]);
+        size_t n = 0;
+        ssize_t k;
+        while (n + 1 < outlen && (k = read(fd[0], out + n, outlen - 1 - n)) > 0)
+            n += (size_t)k;
+        out[n] = 0;
+        char sink[4096];
+        while (read(fd[0], sink, sizeof sink) > 0)
+            ;
+        close(fd[0]);
+    }
+    int st = 0;
+    waitpid(p, &st, 0);
+    return WIFEXITED(st) && WEXITSTATUS(st) == 0 ? 0 : -1;
+}
+
+static int pane_screen(const char *pane, char *out, size_t n)
+{
+    char *argv[] = {"tmux", "capture-pane", "-p", "-t", (char *)pane, NULL};
+    return tmux(argv, out, n);
+}
+
+static int pane_key(const char *pane, const char *key)
+{
+    char *argv[] = {"tmux", "send-keys", "-t", (char *)pane, (char *)key, NULL};
+    return tmux(argv, NULL, 0);
+}
+
+static int pane_text(const char *pane, const char *text)
+{
+    char *argv[] = {"tmux", "send-keys", "-t", (char *)pane, "-l", (char *)text, NULL};
+    return tmux(argv, NULL, 0);
+}
+
+static void sleep_ms(long ms)
+{
+    struct timespec ts = {ms / 1000, (ms % 1000) * 1000000L};
+    nanosleep(&ts, NULL);
+}
+
+static size_t lines_in(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return 0;
+    size_t n = 0;
+    int ch;
+    while ((ch = fgetc(f)) != EOF)
+        n += ch == '\n';
+    fclose(f);
+    return n;
+}
+
+static char *last_line(const char *path)
+{
+    FILE *f = fopen(path, "r");
+    if (!f)
+        return NULL;
+    char *line = NULL, *last = NULL;
+    size_t cap = 0;
+    while (getline(&line, &cap, f) > 0) {
+        free(last);
+        last = xstrdup(line);
+    }
+    free(line);
+    fclose(f);
+    return last;
+}
+
+#define SAY "say \xe2\x80\xba"                        /* the talk screen's input, taught: "say ›" */
+#define SAY_ALONE "say (circuit alone) \xe2\x80\xba" /* the same, F2 on: the circuit alone */
+#define TURN_WAIT_S 1800                           /* a turn of many words is many minutes */
+
+int teacher_say_in_tui(const teacher_t *t, const char *line, bool alone, const char *show, json_t **rec, char *err,
+                       size_t errlen)
+{
+    *rec = NULL;
+    const char *rd = getenv("XDG_RUNTIME_DIR");
+    sb_t lp;
+    sb_init(&lp);
+    sb_printf(&lp, "%s/mjev2-driver.lock", rd && *rd ? rd : "/tmp");
+    int lk = open(lp.s, O_CREAT | O_RDWR, 0644);
+    sb_free(&lp);
+    if (lk < 0 || flock(lk, LOCK_EX)) { /* another driver typing: wait for it */
+        snprintf(err, errlen, "cannot take the TUI driver's lock");
+        if (lk >= 0)
+            close(lk);
+        return -1;
+    }
+    int rc = -1;
+    char *scr = xmalloc(1 << 16);
+    /* the next turn's settings */
+    json_t *nx = jobj();
+    jobj_set(nx, "alone", jbool(alone));
+    if (show && *show && !alone)
+        jobj_set(nx, "show", jstr(show));
+    if (t->speaker)
+        jobj_set(nx, "speaker", jstr(t->speaker));
+    json_t *ok = post(t->learner, "/v1/next", nx, err, errlen);
+    if (!ok)
+        goto out;
+    json_free(ok);
+    /* out of copy mode (a person scrolling), onto the talk screen */
+    char *mode[] = {"tmux", "display", "-p", "-t", (char *)t->pane, "#{pane_in_mode}", NULL};
+    if (tmux(mode, scr, 64) == 0 && scr[0] == '1') {
+        char *cancel[] = {"tmux", "send-keys", "-t", (char *)t->pane, "-X", "cancel", NULL};
+        tmux(cancel, NULL, 0);
+    }
+    if (pane_screen(t->pane, scr, 1 << 16)) {
+        snprintf(err, errlen, "no TUI in tmux pane %s (make watch opens it)", t->pane);
+        goto out;
+    }
+    if (!strstr(scr, SAY) && !strstr(scr, SAY_ALONE)) {
+        pane_key(t->pane, "Escape");
+        sleep_ms(400);
+        pane_key(t->pane, "t");
+        sleep_ms(800);
+        pane_screen(t->pane, scr, 1 << 16);
+        if (!strstr(scr, SAY) && !strstr(scr, SAY_ALONE)) {
+            snprintf(err, errlen, "the TUI in %s did not show its talk screen", t->pane);
+            goto out;
+        }
+    }
+    /* the mode the turn needs, as a person would set it: F2 */
+    bool now_alone = strstr(scr, SAY_ALONE) != NULL;
+    if (now_alone != alone) {
+        pane_key(t->pane, "F2");
+        sleep_ms(400);
+    }
+    size_t before = lines_in(t->turns);
+    if (pane_text(t->pane, line) || pane_key(t->pane, "Enter")) {
+        snprintf(err, errlen, "could not type into tmux pane %s", t->pane);
+        goto out;
+    }
+    for (int s = 0; s < TURN_WAIT_S && lines_in(t->turns) <= before; s++)
+        sleep_ms(1000);
+    if (lines_in(t->turns) <= before) {
+        snprintf(err, errlen, "no turn landed in %s within %d s", t->turns, TURN_WAIT_S);
+        goto out;
+    }
+    char *last = last_line(t->turns);
+    char perr[128];
+    *rec = last ? json_parse(last, strlen(last), perr, sizeof perr) : NULL;
+    free(last);
+    if (!*rec) {
+        snprintf(err, errlen, "the turn in %s could not be read", t->turns);
+        goto out;
+    }
+    if (alone) /* back to taught, where a person left it */
+        pane_key(t->pane, "F2");
+    rc = 0;
+out:
+    free(scr);
+    flock(lk, LOCK_UN);
+    close(lk);
+    return rc;
 }

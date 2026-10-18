@@ -4,9 +4,16 @@ The talk screen's state.
 - **The conversation.** It is read from the learner's `turns.jsonl` (last
   40 turns), so turns from any client show: this screen, `mjev2 mcp`,
   `mjev2 talk`, `learner talk`.
+- **The line being answered**, shown above the reply as it grows: the
+  line said (kept from Enter until the turn ends), labelled by
+  `speaker.txt` when the learner has one (the teacher's turns: `qwen`),
+  else `you`. In the conversation a turn's line is labelled by its
+  record's `speaker` the same way. The user's ask (2026-10-17): "THe TUI
+  needs to show the initial "you" prompts the (local) training model
+  sends"; before, the line only appeared once the turn was over.
 - **The reply as it grows.** It comes from `speaking.txt`, which the
   learner rewrites after every word and removes when the turn ends.
-- **Polling.** Both files are read every 400 ms while the screen is open
+- **Polling.** The files are read every 400 ms while the screen is open
   or a talk job runs.
 
 The screen (view.rs `talk`):
@@ -36,3 +43,8 @@ First one, 2026-10-17: "Hello! Are you happy today?" got "Yes, hello."
 The side panel also shows the last probe (`probes.jsonl`): each fixed
 question with what the circuit alone answered, ✓ or ✗ for the
 requirements, and the turns the learner had had.
+
+Checked 2026-10-17 20:21 with the teacher typing (teach.md): while
+MechJev answered alone, the screen showed `qwen Hi MechJev. How are you
+today?` above `it Hi! I ⠼`, the input line `say (circuit alone) ›` (the
+teacher had pressed F2).

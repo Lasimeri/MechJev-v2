@@ -5,7 +5,9 @@
  *   teacher lines [LESSON...]  a line Qwen writes for each lesson (a look)
  *   teacher freeze [K]         K test lines a lesson, kept for measuring
  *   teacher measure [R]        MechJev alone on every test line, R times
- *   teacher teach [N]          N lessons (the engine chooses them)
+ *   teacher teach [N]          N turns on the ladder (lessons.txt in order)
+ *   teacher status             where MechJev is on the ladder
+ *   teacher stage NAME         move the ladder to a stage
  *
  * Its rows go to lessons.jsonl in the learner's data directory. */
 #define _GNU_SOURCE
@@ -21,10 +23,8 @@
 #include "teach.h"
 #include "util.h"
 
-#define SHOTS 3          /* demonstrations a lesson at most */
 #define RECENT_LINES 8   /* the teacher's own lines it is shown, so it does not loop */
-#define RECENT_LESSONS 6 /* its last lessons, when it chooses the next */
-#define REWRITES 3       /* a line that is a test line is written again */
+#define REWRITES 4       /* a line that is a test line or a repeat is written again */
 
 typedef struct {
     teacher_t t;
@@ -107,11 +107,16 @@ static bool boolean(const json_t *o, const char *k)
 /* ---- judging a try -------------------------------------------------------- */
 
 /* MechJev alone on `line`, judged: every requirement and the lesson's check
- * (0.5 or more). A row {line, reply, requirements, check, coherence, passed}. */
-static int judged_try(teach_ctx_t *c, const lesson_t *l, const char *line, json_t **row, char *err, size_t errlen)
+ * (0.5 or more). A row {line, reply, requirements, check, coherence, passed}.
+ * in_tui: typed in the TUI, an alone turn the person watches (the user's ask:
+ * "The local teaching model needs to show up in the harness just like when
+ * you type for me"); else the probe path (measuring: nothing heard). */
+static int judged_try(teach_ctx_t *c, const lesson_t *l, const char *line, bool in_tui, json_t **row, char *err,
+                      size_t errlen)
 {
     json_t *rec = NULL;
-    if (teacher_try(&c->t, line, &rec, err, errlen))
+    if (in_tui && c->t.pane ? teacher_say_in_tui(&c->t, line, true, NULL, &rec, err, errlen)
+                            : teacher_try(&c->t, line, &rec, err, errlen))
         return -1;
     const char *reply = str(rec, "reply");
     bool req_ok = !boolean(rec, "failed_requirement");
@@ -212,7 +217,7 @@ static int cmd_measure(teach_ctx_t *c, int repeats)
                 continue;
             for (int r = 0; r < repeats; r++) {
                 json_t *row = NULL;
-                if (judged_try(c, l, str(tests->items[k], "line"), &row, err, sizeof err)) {
+                if (judged_try(c, l, str(tests->items[k], "line"), false, &row, err, sizeof err)) {
                     fprintf(stderr, "error: %s\n", err);
                     json_free(tests);
                     return 1;
@@ -238,195 +243,297 @@ static int cmd_measure(teach_ctx_t *c, int repeats)
     return 0;
 }
 
-/* ---- the teacher's context ---------------------------------------------- */
-
-/* What it reads to choose: each lesson's lessons taught, passes on the test
- * lines, the last result; then its last lessons in order. */
-static char *record(teach_ctx_t *c)
+/* The lines it said in its last lessons, newest first, once each, every
+ * line (every turn types a new one): a string
+ * for its prompt, and each line pushed to `avoid`. */
+static char *recent_lines(teach_ctx_t *c, json_t *avoid)
 {
     json_t *rows = read_rows(c->lessons_log);
     sb_t b;
     sb_init(&b);
-    for (size_t i = 0; i < c->ls.n; i++) {
-        const char *name = c->ls.v[i].name;
-        size_t taught = 0, meas = 0, meas_ok = 0;
-        const char *last = "not taught yet";
-        for (size_t k = 0; k < rows->n; k++) {
-            const json_t *r = rows->items[k];
-            if (strcmp(str(r, "lesson"), name))
+    size_t n = 0;
+    for (size_t k = rows->n; k-- > 0 && n < RECENT_LINES;) {
+        const json_t *r = rows->items[k];
+        if (!strcmp(str(r, "mode"), "promote") || !strcmp(str(r, "mode"), "stage"))
+            continue;
+        const json_t *st = jobj_get(r, "steps");
+        size_t ns = st && st->t == J_ARR ? st->n : 0;
+        for (size_t j = ns + 1; j-- > 0 && n < RECENT_LINES;) {
+            const char *l = j == ns ? str(r, "line") : str(st->items[j], "line");
+            bool again = !*l;
+            for (size_t s = 0; s < avoid->n && !again; s++)
+                again = teacher_same_text(avoid->items[s]->s, l);
+            if (again)
                 continue;
-            if (!strcmp(str(r, "mode"), "teach")) {
-                taught++;
-                last = boolean(r, "passed") ? "passed" : "did not pass";
-            } else if (!strcmp(str(r, "mode"), "measure")) {
-                meas++;
-                meas_ok += boolean(r, "passed");
-            }
-        }
-        sb_printf(&b, "- %s (%s): taught %zu times; on the test lines it passed %zu of %zu; last lesson: %s\n",
-                  name, c->ls.v[i].goal, taught, meas_ok, meas, last);
-    }
-    size_t shown = 0;
-    for (size_t k = rows->n; k-- > 0 && shown < RECENT_LESSONS;)
-        shown += !strcmp(str(rows->items[k], "mode"), "teach");
-    if (shown) {
-        sb_puts(&b, "Your last lessons, oldest first:\n");
-        for (size_t k = 0; k < rows->n; k++) {
-            const json_t *r = rows->items[k];
-            if (strcmp(str(r, "mode"), "teach"))
-                continue;
-            size_t after = 0; /* lessons after this one */
-            for (size_t j = k + 1; j < rows->n; j++)
-                after += !strcmp(str(rows->items[j], "mode"), "teach");
-            if (after >= RECENT_LESSONS)
-                continue;
-            sb_printf(&b, "- %s: you said \"%s\"; %s after %u demonstrations\n", str(r, "lesson"), str(r, "line"),
-                      boolean(r, "passed") ? "it passed" : "it did not pass",
-                      (unsigned)(jobj_get(r, "shots") ? jobj_get(r, "shots")->u : 0));
+            jarr_push(avoid, jstr(l));
+            n++;
+            sb_printf(&b, "%s\"%s\"", n > 1 ? "; " : "Lines you have said to MechJev in your last lessons: ", l);
         }
     }
     json_free(rows);
     return sb_take(&b);
 }
 
-/* The lines it said lately, newest first, once each. */
-static char *recent_lines(teach_ctx_t *c)
+/* Qwen's next line at a stage, toward `goal`: shown the stage's last
+ * exchanges (its lines and MechJev's replies) and its lines of the last
+ * turns, and written again while it is a test line or one in `avoid`, the
+ * lines it rejected shown to it. The user's ask (2026-10-17): "Stop the
+ * Qwen model from looping when teaching MechJev": a lesson had typed its one
+ * line for every try and demonstration, 4 times in the greet lesson. The
+ * line is pushed to `avoid`. */
+static int next_line(teach_ctx_t *c, const lesson_t *l, const char *goal, const json_t *tests, const char *recent,
+                     json_t *avoid,
+                     const char *exchanges, char **line, char *err, size_t errlen)
 {
-    json_t *rows = read_rows(c->lessons_log);
-    sb_t b;
-    sb_init(&b);
-    const char *seen[RECENT_LINES];
-    size_t n = 0;
-    for (size_t k = rows->n; k-- > 0 && n < RECENT_LINES;) {
-        const json_t *r = rows->items[k];
-        if (strcmp(str(r, "mode"), "teach"))
-            continue;
-        const char *l = str(r, "line");
-        bool again = false;
-        for (size_t s = 0; s < n && !again; s++)
-            again = teacher_same_text(seen[s], l);
-        if (again || !*l)
-            continue;
-        seen[n++] = l;
-        sb_printf(&b, "%s\"%s\"", n > 1 ? "; " : "Lines you have said to MechJev lately: ", l);
+    sb_t ctx;
+    sb_init(&ctx);
+    if (exchanges && *exchanges)
+        sb_printf(&ctx, "This lesson so far:\n%s", exchanges);
+    if (recent && *recent)
+        sb_printf(&ctx, "%s%s", ctx.n ? "\n\n" : "", recent);
+    *line = NULL;
+    for (int k = 0; k < REWRITES; k++) {
+        free(*line);
+        *line = NULL;
+        if (teacher_write(&c->t, goal, ctx.s, line, err, errlen)) {
+            sb_free(&ctx);
+            return -1;
+        }
+        bool again = is_test_line(tests, *line);
+        for (size_t s = 0; s < avoid->n && !again; s++)
+            again = teacher_same_text(avoid->items[s]->s, *line);
+        if (!again) {
+            jarr_push(avoid, jstr(*line));
+            sb_free(&ctx);
+            return 0;
+        }
+        sb_printf(&ctx, "%sNot \"%s\": you have said that already.", ctx.n ? "\n\n" : "", *line);
     }
-    char *out = n ? xstrdup(b.s) : xstrdup("");
-    sb_free(&b);
-    json_free(rows);
-    return out;
+    snprintf(err, errlen, "the teacher wrote %d lines for %s and each was a repeat or a test line (last: \"%s\")",
+             REWRITES, l->name, *line);
+    free(*line);
+    *line = NULL;
+    sb_free(&ctx);
+    return -1;
 }
 
-/* ---- a lesson ------------------------------------------------------------ */
+/* ---- the ladder ------------------------------------------------------------ */
 
-static int lesson(teach_ctx_t *c, int fixed, char *err, size_t errlen)
+/* The user's asks (2026-10-17): "Qwen needs to prompt increasingly complex
+ * prompts", "MechJev needs to learn to communicate first", and "the
+ * repetitions aren't needed". The stages are lessons.txt in order, each
+ * harder than the one before; every turn Qwen writes a new line. A stage
+ * opens with a check of MechJev alone (what it has mastered is climbed past
+ * at once), then taught turns, a check after every CHECK_EVERY of them; it
+ * moves up when PROMOTE of its last 3 checks passed. */
+#define CHECK_EVERY 2 /* taught turns between checks of MechJev alone */
+#define PROMOTE 2     /* passed checks, of the last 3, that move it up */
+#define EXCHANGES 6   /* the stage's last exchanges Qwen is shown */
+
+typedef struct {
+    size_t stage;     /* its index in the lessons */
+    size_t taught;    /* taught turns at it since it was reached */
+    size_t since;     /* taught turns since its last check */
+    size_t nchecks;   /* checks at it */
+    bool last[3];     /* the last checks, newest last */
+    size_t nlast;
+    char *exchanges;  /* its last exchanges, for Qwen's next line */
+} ladder_t;
+
+/* Where MechJev is, from lessons.jsonl: the stage the last promotion (or
+ * `teacher stage`) reached, else the first; its turns and checks since. */
+static void ladder_read(teach_ctx_t *c, ladder_t *ld)
 {
-    size_t li;
-    if (fixed >= 0)
-        li = (size_t)fixed;
-    else {
-        char *rec = record(c);
-        int rc = teacher_choose(&c->t, &c->ls, rec, &li, err, errlen);
-        free(rec);
-        if (rc)
-            return -1;
-    }
-    const lesson_t *l = &c->ls.v[li];
-    json_t *tests = tests_load(c);
-    char *ctx = recent_lines(c);
-    char *line = NULL;
-    for (int k = 0; k < REWRITES; k++) { /* never teach a test line */
-        free(line);
-        line = NULL;
-        if (teacher_write(&c->t, l->goal, ctx, &line, err, errlen)) {
-            free(ctx);
-            json_free(tests);
-            return -1;
-        }
-        if (!is_test_line(tests, line))
+    memset(ld, 0, sizeof *ld);
+    json_t *rows = read_rows(c->lessons_log);
+    size_t from = 0;
+    for (size_t k = rows->n; k-- > 0;) {
+        const json_t *r = rows->items[k];
+        const char *m = str(r, "mode");
+        int i = !strcmp(m, "promote") || !strcmp(m, "stage") ? lessons_find(&c->ls, str(r, "to")) : -1;
+        if (i >= 0) {
+            ld->stage = (size_t)i;
+            from = k + 1;
             break;
+        }
     }
-    free(ctx);
-    if (is_test_line(tests, line)) {
-        snprintf(err, errlen, "every line the teacher wrote for %s is a test line", l->name);
-        free(line);
-        json_free(tests);
+    const char *name = c->ls.v[ld->stage].name;
+    size_t ex[EXCHANGES], nex = 0;
+    for (size_t k = from; k < rows->n; k++) {
+        const json_t *r = rows->items[k];
+        const char *m = str(r, "mode");
+        if (strcmp(str(r, "lesson"), name) || (strcmp(m, "taught") && strcmp(m, "check")))
+            continue;
+        if (!strcmp(m, "taught")) {
+            ld->taught++;
+            ld->since++;
+        } else {
+            ld->nchecks++;
+            ld->since = 0;
+            if (ld->nlast == 3) {
+                memmove(ld->last, ld->last + 1, 2 * sizeof *ld->last);
+                ld->nlast = 2;
+            }
+            ld->last[ld->nlast++] = boolean(r, "passed");
+        }
+        if (nex == EXCHANGES) {
+            memmove(ex, ex + 1, (EXCHANGES - 1) * sizeof *ex);
+            nex--;
+        }
+        ex[nex++] = k;
+    }
+    sb_t b;
+    sb_init(&b);
+    for (size_t i = 0; i < nex; i++) {
+        const json_t *r = rows->items[ex[i]];
+        sb_printf(&b, "%sYou: %s\nMechJev: %s", i ? "\n" : "", str(r, "line"), str(r, "reply"));
+    }
+    ld->exchanges = sb_take(&b);
+    json_free(rows);
+}
+
+static size_t passed_of_last(const ladder_t *ld)
+{
+    size_t n = 0;
+    for (size_t i = 0; i < ld->nlast; i++)
+        n += ld->last[i];
+    return n;
+}
+
+/* One turn on the ladder: a check of MechJev alone when one is due, else a
+ * taught turn; both typed in the TUI, a new line Qwen writes each time. */
+static int ladder_step(teach_ctx_t *c, char *err, size_t errlen)
+{
+    ladder_t ld;
+    ladder_read(c, &ld);
+    const lesson_t *l = &c->ls.v[ld.stage];
+    bool check = ld.nchecks == 0 || ld.since >= CHECK_EVERY;
+    const char *goal = check && l->held_goal ? l->held_goal : l->goal;
+    json_t *tests = tests_load(c), *avoid = jarr();
+    char *recent = recent_lines(c, avoid);
+    char *line = NULL;
+    int rc = next_line(c, l, goal, tests, recent, avoid, ld.exchanges, &line, err, errlen);
+    free(recent);
+    json_free(avoid);
+    json_free(tests);
+    if (rc) {
+        free(ld.exchanges);
         return -1;
     }
-    json_free(tests);
-    char when[32];
-    stamp(when, sizeof when);
-    json_t *row = jobj(), *steps = jarr();
-    jobj_set(row, "time", jstr(when));
-    jobj_set(row, "lesson", jstr(l->name));
-    jobj_set(row, "mode", jstr("teach"));
-    jobj_set(row, "chosen_by", jstr(fixed >= 0 ? "asked" : "teacher"));
-    jobj_set(row, "line", jstr(line));
-    printf("lesson %s: Qwen says \"%s\"\n", l->name, line);
+    printf("stage %zu/%zu %s, %s: Qwen says \"%s\"\n", ld.stage + 1, c->ls.n, l->name,
+           check ? "a check of MechJev alone" : "taught", line);
     fflush(stdout);
-    json_t *a = NULL;
-    int rc = judged_try(c, l, line, &a, err, errlen);
-    bool passed = !rc && boolean(a, "passed");
-    if (!rc) {
-        printf("  MechJev alone: \"%s\" %s (check %.2f)\n", str(a, "reply"), passed ? "PASS" : "fail",
-               jobj_get(a, "check")->f);
-        jarr_push(steps, a);
-    }
-    size_t shots = 0;
-    while (!rc && !passed && shots < SHOTS) {
+    json_t *row = NULL;
+    if (check)
+        rc = judged_try(c, l, line, true, &row, err, errlen);
+    else {
         json_t *rec = NULL;
-        rc = teacher_demonstrate(&c->t, line, l->show, &rec, err, errlen);
-        if (rc)
-            break;
-        json_t *d = jobj();
-        jobj_set(d, "demonstration", ju64(++shots));
-        jobj_set(d, "reply", jstr(str(rec, "reply")));
-        jobj_set(d, "requirements", jbool(!boolean(rec, "failed_requirement")));
-        jobj_set(d, "turn", jclone(jobj_get(rec, "turn")));
-        printf("  demonstration %zu (taught turn, the engine choosing among MechJev's words): \"%s\"\n", shots,
-               str(rec, "reply"));
-        json_free(rec);
-        jarr_push(steps, d);
-        rc = judged_try(c, l, line, &a, err, errlen);
+        rc = c->t.pane ? teacher_say_in_tui(&c->t, line, false, l->show, &rec, err, errlen)
+                       : teacher_demonstrate(&c->t, line, l->show, &rec, err, errlen);
+        double p = 0;
+        const char *reply = rc ? "" : str(rec, "reply");
+        if (!rc && *reply)
+            rc = teacher_check(&c->t, l, line, reply, &p, err, errlen);
         if (!rc) {
-            passed = boolean(a, "passed");
-            printf("  MechJev alone: \"%s\" %s (check %.2f)\n", str(a, "reply"), passed ? "PASS" : "fail",
-                   jobj_get(a, "check")->f);
-            jarr_push(steps, a);
+            bool req_ok = !boolean(rec, "failed_requirement");
+            row = jobj();
+            jobj_set(row, "line", jstr(line));
+            jobj_set(row, "reply", jstr(reply));
+            jobj_set(row, "requirements", jbool(req_ok));
+            jobj_set(row, "check", jf64(round(p * 1e4) / 1e4));
+            jobj_set(row, "coherence", jclone(jobj_get(rec, "coherence_final")));
+            jobj_set(row, "passed", jbool(req_ok && p >= 0.5));
+            jobj_set(row, "turn", jclone(jobj_get(rec, "turn")));
         }
+        json_free(rec);
     }
     free(line);
-    fflush(stdout);
-    if (rc) {
-        json_free(row);
-        json_free(steps);
+    free(ld.exchanges);
+    if (rc)
         return -1;
-    }
-    jobj_set(row, "steps", steps);
-    jobj_set(row, "shots", ju64(shots));
-    jobj_set(row, "passed", jbool(passed));
+    char when[32];
+    stamp(when, sizeof when);
+    jobj_set(row, "time", jstr(when));
+    jobj_set(row, "lesson", jstr(l->name));
+    jobj_set(row, "stage", ju64(ld.stage + 1));
+    jobj_set(row, "mode", jstr(check ? "check" : "taught"));
+    bool passed = boolean(row, "passed");
+    printf("  MechJev%s: \"%s\" check %.2f, requirements %s: %s\n", check ? " alone" : "", str(row, "reply"),
+           jobj_get(row, "check")->f, boolean(row, "requirements") ? "met" : "failed", passed ? "PASS" : "fail");
     append(c->lessons_log, row);
     json_free(row);
+    if (check) {
+        if (ld.nlast == 3) {
+            memmove(ld.last, ld.last + 1, 2 * sizeof *ld.last);
+            ld.nlast = 2;
+        }
+        ld.last[ld.nlast++] = passed;
+        if (passed_of_last(&ld) >= PROMOTE) {
+            if (ld.stage + 1 < c->ls.n) {
+                json_t *p = jobj();
+                jobj_set(p, "time", jstr(when));
+                jobj_set(p, "mode", jstr("promote"));
+                jobj_set(p, "from", jstr(l->name));
+                jobj_set(p, "to", jstr(c->ls.v[ld.stage + 1].name));
+                jobj_set(p, "taught", ju64(ld.taught));
+                jobj_set(p, "checks", ju64(ld.nchecks + 1));
+                append(c->lessons_log, p);
+                json_free(p);
+                printf("  promoted: %s -> %s (after %zu taught turns, %zu checks)\n", l->name,
+                       c->ls.v[ld.stage + 1].name, ld.taught, ld.nchecks + 1);
+            } else
+                printf("  the top of the ladder: %s passed\n", l->name);
+        }
+    }
+    fflush(stdout);
     return 0;
 }
 
-static int cmd_teach(teach_ctx_t *c, int n, const char *only)
+static int cmd_teach(teach_ctx_t *c, int n)
 {
-    int fixed = only ? lessons_find(&c->ls, only) : -1;
-    if (only && fixed < 0) {
-        fprintf(stderr, "no lesson %s in the lessons\n", only);
-        return 2;
-    }
     char err[512];
     int in_a_row = 0, failed = 0;
     for (int k = 0; k < n && in_a_row < 2; k++) {
-        if (lesson(c, fixed, err, sizeof err)) {
-            fprintf(stderr, "error: lesson %d: %s\n", k + 1, err);
+        if (ladder_step(c, err, sizeof err)) {
+            fprintf(stderr, "error: turn %d: %s\n", k + 1, err);
             in_a_row++;
             failed++;
         } else
             in_a_row = 0;
     }
     return failed ? 1 : 0;
+}
+
+/* `teacher stage NAME`: the ladder moved to a stage, as a row. */
+static int cmd_stage(teach_ctx_t *c, const char *name)
+{
+    if (lessons_find(&c->ls, name) < 0) {
+        fprintf(stderr, "no stage %s in the lessons\n", name);
+        return 2;
+    }
+    char when[32];
+    stamp(when, sizeof when);
+    json_t *r = jobj();
+    jobj_set(r, "time", jstr(when));
+    jobj_set(r, "mode", jstr("stage"));
+    jobj_set(r, "to", jstr(name));
+    append(c->lessons_log, r);
+    json_free(r);
+    printf("the ladder is at %s\n", name);
+    return 0;
+}
+
+static int cmd_status(teach_ctx_t *c)
+{
+    ladder_t ld;
+    ladder_read(c, &ld);
+    printf("stage %zu/%zu %s: %zu taught turns, %zu checks, %zu of the last %zu passed (%d move it up)\n",
+           ld.stage + 1, c->ls.n, c->ls.v[ld.stage].name, ld.taught, ld.nchecks, passed_of_last(&ld), ld.nlast,
+           PROMOTE);
+    if (*ld.exchanges)
+        printf("%s\n", ld.exchanges);
+    free(ld.exchanges);
+    return 0;
 }
 
 static int cmd_lines(teach_ctx_t *c, int argc, char **argv)
@@ -456,7 +563,9 @@ static void usage(void)
           "  teacher lines [LESSON...]  a line Qwen writes for each lesson (a look; nothing is sent)\n"
           "  teacher freeze [K]         K test lines a lesson (3), kept in teacher_tests.jsonl\n"
           "  teacher measure [R]        MechJev alone on every test line, R times (1)\n"
-          "  teacher teach [N] [--lesson NAME]  N lessons (1); the engine chooses them\n"
+          "  teacher teach [N]          N turns on the ladder (1): lessons.txt in order, each stage harder\n"
+          "  teacher status             where MechJev is on the ladder, and its last exchanges\n"
+          "  teacher stage NAME         move the ladder to a stage\n"
           "The engine (make serve) and MechJev's server (learner serve) must be up.\n",
           stderr);
 }
@@ -474,6 +583,13 @@ int main(int argc, char **argv)
     c.t.learner = conf_get("MJ2_BIND", "127.0.0.1:8092");
     c.dir = data_dir();
     c.lessons_log = join(c.dir, "lessons.jsonl");
+    /* the TUI to type into, as a person would: MJEV2_PANE (jev2.0); empty:
+     * the API, nothing shown */
+    const char *pane = getenv("MJEV2_PANE");
+    c.t.pane = pane ? (*pane ? pane : NULL) : "jev2.0";
+    char *turns = join(c.dir, "turns.jsonl");
+    c.t.turns = turns;
+    c.t.speaker = "Qwen";
     c.tests = join(c.dir, "teacher_tests.jsonl");
     const char *lp = getenv("MJ2_LESSONS");
     char *root = conf_repo_root();
@@ -494,17 +610,13 @@ int main(int argc, char **argv)
         rc = cmd_freeze(&c, argc > 2 ? atoi(argv[2]) : 3);
     else if (!strcmp(cmd, "measure"))
         rc = cmd_measure(&c, argc > 2 ? atoi(argv[2]) : 1);
-    else if (!strcmp(cmd, "teach")) {
-        int n = 1;
-        const char *only = NULL;
-        for (int i = 2; i < argc; i++) {
-            if (!strcmp(argv[i], "--lesson") && i + 1 < argc)
-                only = argv[++i];
-            else
-                n = atoi(argv[i]);
-        }
-        rc = cmd_teach(&c, n, only);
-    } else {
+    else if (!strcmp(cmd, "teach"))
+        rc = cmd_teach(&c, argc > 2 ? atoi(argv[2]) : 1);
+    else if (!strcmp(cmd, "status"))
+        rc = cmd_status(&c);
+    else if (!strcmp(cmd, "stage") && argc > 2)
+        rc = cmd_stage(&c, argv[2]);
+    else {
         usage();
         rc = 2;
     }
@@ -512,5 +624,6 @@ int main(int argc, char **argv)
     free(c.dir);
     free(c.lessons_log);
     free(c.tests);
+    free(turns);
     return rc;
 }

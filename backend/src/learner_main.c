@@ -43,6 +43,11 @@ typedef struct {
     speak_cfg_t cfg;
     history_t h;
     pthread_mutex_t mu;
+    /* the next turn's settings (POST /v1/next, used once by the next
+     * /v1/talk): the teacher typing in the TUI like a person, its turn
+     * labelled, its answer words shown, or MechJev alone */
+    char *next_show, *next_speaker;
+    bool next_alone;
 } ctx_t;
 
 static char *data_dir(void)
@@ -290,8 +295,8 @@ static int persist(ctx_t *c, const json_t *rec, char *err, size_t errlen)
 
 /* One turn; alone: the circuit speaks by itself this turn (the engine
  * perceives and judges, chooses no word, nothing is learned). */
-static int one_turn(ctx_t *c, const char *message, bool alone, const char *show, char **reply, json_t **rec, char *err,
-                    size_t errlen)
+static int one_turn(ctx_t *c, const char *message, bool alone, const char *show, const char *speaker, char **reply,
+                    json_t **rec, char *err, size_t errlen)
 {
     pthread_mutex_lock(&c->mu);
     speak_cfg_t cfg = c->cfg;
@@ -307,6 +312,11 @@ static int one_turn(ctx_t *c, const char *message, bool alone, const char *show,
     char *sp = join(c->dir, "speaking.txt");
     unlink(sp); /* the turn is over: nothing is being said */
     free(sp);
+    sp = join(c->dir, "speaker.txt");
+    unlink(sp); /* and no one is waiting for an answer */
+    free(sp);
+    if (!rc && speaker && *speaker) /* who said it, for the TUI (the teacher: "Qwen") */
+        jobj_set(*rec, "speaker", jstr(speaker));
     if (!rc)
         rc = persist(c, *rec, err, errlen);
     pthread_mutex_unlock(&c->mu);
@@ -531,7 +541,7 @@ static int cmd_talk(ctx_t *c, int argc, char **argv)
         }
         char *reply;
         json_t *rec;
-        if (one_turn(c, m.s, false, NULL, &reply, &rec, err, sizeof err)) {
+        if (one_turn(c, m.s, false, NULL, NULL, &reply, &rec, err, sizeof err)) {
             fprintf(stderr, "error: %s\n", err);
             return 1;
         }
@@ -556,7 +566,7 @@ static int cmd_talk(ctx_t *c, int argc, char **argv)
             continue;
         char *reply;
         json_t *rec;
-        if (one_turn(c, line, false, NULL, &reply, &rec, err, sizeof err)) {
+        if (one_turn(c, line, false, NULL, NULL, &reply, &rec, err, sizeof err)) {
             fprintf(stderr, "error: %s\n", err);
             continue;
         }
@@ -723,6 +733,39 @@ static void *serve_conn(void *arg)
         json_t *o = stats_json(c);
         pthread_mutex_unlock(&c->mu);
         reply_json(k->fd, 200, o);
+    } else if (post && !strcmp(r.path, "/v1/next")) {
+        /* {"show", "alone", "speaker"}: the next /v1/talk turn's settings, used
+         * once: the teacher types its line into the TUI as a person would,
+         * and its turn is labelled, shows its answer words, or is MechJev's
+         * alone */
+        json_t *v = json_parse(r.body ? r.body : "", r.body_len, err, sizeof err);
+        if (!v || v->t != J_OBJ)
+            reply_json(k->fd, 422, message("POST {\"show\": ..., \"alone\": true, \"speaker\": ...}"));
+        else {
+            const json_t *sh = jobj_get(v, "show"), *al = jobj_get(v, "alone"), *sp = jobj_get(v, "speaker");
+            pthread_mutex_lock(&c->mu);
+            free(c->next_show);
+            free(c->next_speaker);
+            c->next_show = sh && sh->t == J_STR ? xstrdup(sh->s) : NULL;
+            c->next_speaker = sp && sp->t == J_STR ? xstrdup(sp->s) : NULL;
+            c->next_alone = al && al->t == J_BOOL && al->b;
+            /* who will speak, for the TUI from the first frame of the turn */
+            char *spf = join(c->dir, "speaker.txt");
+            if (c->next_speaker) {
+                FILE *f = fopen(spf, "w");
+                if (f) {
+                    fputs(c->next_speaker, f);
+                    fclose(f);
+                }
+            } else
+                unlink(spf);
+            free(spf);
+            pthread_mutex_unlock(&c->mu);
+            json_t *o = jobj();
+            jobj_set(o, "ok", jbool(true));
+            reply_json(k->fd, 200, o);
+        }
+        json_free(v);
     } else if (post && !strcmp(r.path, "/v1/probe")) {
         /* {"message": ...}: that message alone (the teacher's try); else the
          * fixed probes (probes.txt) */
@@ -746,8 +789,19 @@ static void *serve_conn(void *arg)
             json_t *rec;
             const json_t *al = jobj_get(v, "alone");
             const json_t *sh = jobj_get(v, "show");
-            if (one_turn(c, m->s, al && al->t == J_BOOL && al->b, sh && sh->t == J_STR ? sh->s : NULL, &reply, &rec,
-                         err, sizeof err))
+            /* the pending settings from POST /v1/next, used by this turn once */
+            pthread_mutex_lock(&c->mu);
+            char *n_show = c->next_show, *n_speaker = c->next_speaker;
+            bool n_alone = c->next_alone;
+            c->next_show = c->next_speaker = NULL;
+            c->next_alone = false;
+            pthread_mutex_unlock(&c->mu);
+            const char *show = sh && sh->t == J_STR ? sh->s : n_show;
+            int trc = one_turn(c, m->s, (al && al->t == J_BOOL && al->b) || n_alone, show, n_speaker, &reply, &rec,
+                               err, sizeof err);
+            free(n_show);
+            free(n_speaker);
+            if (trc)
                 reply_json(k->fd, 502, message(err));
             else {
                 free(reply);

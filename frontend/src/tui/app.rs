@@ -729,6 +729,7 @@ impl App {
             return self.fail("a job is running; say it when it is done");
         }
         self.talk.input.set_text("");
+        self.talk.pending = Some(message.clone()); // shown while it answers
         let alone = self.talk.alone;
         self.talk.back = 0;
         self.begin(Job::Talking, "the learner is answering");
@@ -1385,6 +1386,7 @@ impl App {
             },
             Msg::Talked(r) => {
                 self.end_job();
+                self.talk.pending = None;
                 match r {
                     Ok(rec) => {
                         let said = rec["reply"].as_str().unwrap_or("");

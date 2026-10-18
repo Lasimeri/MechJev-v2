@@ -27,6 +27,7 @@ the teacher:
 | `POST /v1/hear {text}` | English text read |
 | `POST /v1/probe` | the fixed probes, a row each (`probes.jsonl`) |
 | `POST /v1/probe {message}` | that message to the circuit alone, from an empty conversation, nothing heard, learned or counted: the teacher's try; the turn record back |
+| `POST /v1/next {show, alone, speaker}` | the next `/v1/talk` turn's settings, used by it once: the teacher, typing its line in the TUI as a person would, sets its answer words (`show`), MechJev alone for a check, and who speaks (`speaker`, "Qwen": the turn record's `speaker`, the TUI's label) |
 
 One process at a time writes the learner's data: `talk`, `hear`, `probe`,
 `serve`, the rebuilds and `reset` hold an exclusive lock (flock on `lock` in
@@ -47,7 +48,9 @@ Data: `$MJ2_DATA`, else `$XDG_DATA_HOME/mechjev-v2`, else
   seeds;
 - `probes.jsonl`, the probe rows;
 - `lessons.jsonl` and `teacher_tests.jsonl`, the teacher's (teach.md);
-- `speaking.txt`, the reply so far while a turn runs (the TUI shows it).
+- `speaking.txt`, the reply so far while a turn runs, and `speaker.txt`, who
+  is speaking when it is not the person (written at `/v1/next`, removed when
+  the turn ends): the TUI shows both while MechJev answers.
 
 `learner probe` (also `POST /v1/probe`, `mjev2 probe`, the MCP `probe` tool)
 is the acquisition curve's instrument. The questions in `probes.txt`

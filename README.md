@@ -50,12 +50,17 @@ The language is acquired by the circuit. Nothing in the 35B changes.
 ║  │  fast memory (silent)               │                 │ /v1/generate: the teacher's │ ║
 ║  │  learner.store, turns.jsonl         │                 │ lines only                  │ ║
 ║  └──────────────────▲──────────────────┘                 │              │              │ ║
-║                     │ /v1/probe {message}                │              ▼              │ ║
-║                     │ /v1/talk {message, show}           │ llama.cpp (CUDA build)      │ ║
-║  ┌──────────────────┴──────────────────┐  /v1/generate   │ Qwen3.8-35B-A3B Q4_K_M      │ ║
-║  │ teacher (C): Qwen, from outside     │ ──────────────▶ │ 21 of 41 layers on the GPU  │ ║
-║  │ writes lines, chooses, judges       │  /v1/systemone  │                             │ ║
-║  │ lessons.txt ─▶ lessons.jsonl        │ ◀────────────── │                             │ ║
+║                     │ /v1/talk: the typed turns          │              ▼              │ ║
+║  ┌──────────────────┴──────────────────┐                 │ llama.cpp (CUDA build)      │ ║
+║  │ mjev2 TUI (Rust, tmux jev2.0)       │                 │ Qwen3.8-35B-A3B Q4_K_M      │ ║
+║  │ talk screen: qwen/you, solo/it      │                 │ 21 of 41 layers on the GPU  │ ║
+║  └──────────────────▲──────────────────┘                 │                             │ ║
+║                     │ tmux send-keys: F2, line, Enter    │                             │ ║
+║  ┌──────────────────┴──────────────────┐  /v1/generate   │                             │ ║
+║  │ teacher (C): Qwen, from outside     │ ──────────────▶ │                             │ ║
+║  │ the ladder: 17 stages, a new line   │  /v1/systemone  │                             │ ║
+║  │ a turn; /v1/next to MechJev         │ ◀────────────── │                             │ ║
+║  │ lessons.txt ─▶ lessons.jsonl        │                 │                             │ ║
 ║  └─────────────────────────────────────┘                 └─────────────────────────────┘ ║
 ║                                                                                          ║
 ╚══════════════════════════════════════════════════════════════════════════════════════════╝
@@ -83,8 +88,8 @@ make stop       # stop the engine
 **The TUI** (`frontend/target/release/mjev2`) is Mechanical Jev's,
 reused as the management interface, with a talk screen added:
 - **Left:** the conversation, each reply with its words' per-token scores
-  under it, the reply growing word by word while a turn runs. The
-  teacher's demonstrations appear here too.
+  under it, the line being answered and the reply growing word by word
+  while a turn runs. The teacher types its lines here, labelled `qwen`.
 - **Right:** what MechJev knows and how it is learning: agreement with the
   engine, also without the variables or the word before; coherence;
   requirements; the agreement turn by turn; the last probe.
@@ -117,9 +122,10 @@ it with
 - `reset --yes` forgets everything.
 
 **The teacher** is `backend/build/teacher` (backend/src/teach.md):
-`freeze` writes the test lines once, `measure` puts them to MechJev alone,
-`teach N` gives N lessons, `lines` shows the lines Qwen writes. `mjev2
-teach [N]` starts the engine and MechJev first.
+`teach N` takes N turns up the ladder, typed in the TUI; `status` says
+where MechJev is on it, `stage NAME` moves it; `freeze` writes the test
+lines once, `measure` puts them to MechJev alone; `lines` shows the lines
+Qwen writes. `mjev2 teach [N]` starts the engine and MechJev first.
 
 **Data** is in `~/.local/share/mechjev-v2`:
 - `learner.store`;
@@ -150,7 +156,7 @@ teach [N]` starts the engine and MechJev first.
 | `MJ2_RECENT_SHARE` | `0` | share of rehearsal passes drawn from the newest examples |
 | `MJ2_PROBES`, `MJ2_PROBE_REPEATS` | `probes.txt`, `3` | the probe questions, and times each is asked |
 | `MJ2_VARS`, `MJ2_CHECKS` | `variables.txt`, `restrictions.txt` | the variables and the requirements |
-| `MJ2_LESSONS` | `lessons.txt` | the teacher's lessons |
+| `MJ2_LESSONS` | `lessons.txt` | the teacher's ladder, its stages in order |
 | `MJ2_BIND` | `127.0.0.1:8092` | MechJev's server |
 | `MJ2_DATA` | `~/.local/share/mechjev-v2` | the learner's and the teacher's data |
 
@@ -170,7 +176,7 @@ teach [N]` starts the engine and MechJev first.
      Past that, the circuit proposes its 8 best and the engine adds its 10
      best from the whole vocabulary. The words the person just said are
      always offered too: before, 24 of 34 content words they used were
-     never shown. In a teacher's demonstration the lesson's answer words
+     never shown. In a turn the teacher teaches, the stage's answer words
      are offered as well. The options are shuffled with a clock seed, so
      the engine never sees the circuit's ranking.
    - **Choice.** The engine chooses among them as continuations of the
@@ -218,28 +224,34 @@ The details are in the sibling `.md` of each source file in `backend/src/`.
 
 Qwen3.8-35B teaches MechJev from outside, the way a person at the TUI would
 (the user's ask: "MechJev shouldn't question/teach itself, Qwen3.8-35B
-should do that for MechJev"). `backend/build/teacher` is a client of the
-engine and of MechJev's server:
+should do that for MechJev"), up a ladder: "Qwen needs to prompt
+increasingly complex prompts", communication first. `backend/build/teacher`
+is a client of the engine and of MechJev's server:
 
-- **The engine chooses the lesson** MechJev needs most, a Choice over
-  `lessons.txt` with its record in the question (times taught, passes on
-  the test lines, its last lessons in order, so it does not loop).
-- **Qwen writes the line** in plain English (`POST /v1/generate`), knowing
-  its own recent lines so it says each anew: "Hello MechJev! How are you?",
-  "What is your name, MechJev?".
-- **MechJev tries alone** (its probe path: nothing heard or learned), and
-  the engine judges the reply: every requirement, and the lesson's own
+- **The ladder** is `lessons.txt` in order, 17 stages from greetings to
+  explaining a thing in its own words: greet, feeling, yes-no, name-tell,
+  name, thanks, goodbye, likes, day, weather, why, two-part, describe,
+  follow-up, about-me, learning, explain. Each stage opens with a check of
+  MechJev alone (what it has mastered is climbed past at once), then
+  taught turns, a check after every 2; 2 of its last 3 checks passed move
+  it up.
+- **Qwen writes a new line every turn** in plain English (`POST
+  /v1/generate`), shown the stage's last 6 exchanges and its own recent
+  lines; a line it has said already is written again, so it never loops
+  ("Hi MechJev. How are you today?", "Hello MechJev. Are you okay?", "Hi
+  MechJev. How are you doing?").
+- **It types the line in the TUI**, labelled `qwen` there while MechJev
+  answers: a taught turn, the engine choosing each of MechJev's words among
+  its own (and the stage's answer words, "MechJev" for "What is your
+  name?"), or for a check, MechJev alone (F2).
+- **The engine judges** the reply: every requirement, and the stage's own
   check as a Noul.
-- **Failed, a demonstration**: a taught turn on the line in MechJev's
-  conversation, the engine choosing each word among MechJev's own (and the
-  lesson's answer words, "MechJev" for "What is your name?"), then another
-  try; 3 at most.
 
 Qwen writes only the teacher's side: MechJev's replies are always its own,
-and it never learns from a reply Qwen wrote. Mastery is measured on test
-lines Qwen writes once (`teacher freeze`) and never teaches (`teacher
-measure`, before and after). Each lesson is a row in `lessons.jsonl`.
-Details: `backend/src/teach.md`.
+and it never learns from a reply Qwen wrote. `teacher status` says where it
+is; each turn is a row in `lessons.jsonl`, the ladder's only state. Test
+lines Qwen writes once (`teacher freeze`) and never teaches measure it
+before and after (`teacher measure`). Details: `backend/src/teach.md`.
 
 ## Measured
 
@@ -310,9 +322,12 @@ is not an answer.
 
 - **No Xeon Phi cards** yet; the engine runs on this machine's CPU and
   GPU only.
-- **The teacher has not run end to end.** It is written and built (`teacher
-  freeze`, `measure`, `teach`), its generation measured; no lesson from it
-  has been given yet, and no before-and-after on the test lines exists.
+- **The ladder is at its first stage.** It ran in the harness (the TUI)
+  for its first turns; no stage above greet has been reached yet, and no
+  before-and-after on the test lines exists.
+- **Code.** The user's end goal, MechJev writing simple, functional
+  programs, comes after communication; MechJev cannot yet even hear a
+  program whole (its tokenizer drops brackets and quotes; docs/plan.md).
 - **Parity after generation** is not re-checked. A run with a generation
   before each parity request differed in every answer, but it ran with the
   user's CLAUDE.md as the engine's system text and the recording did not;

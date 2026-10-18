@@ -39,6 +39,10 @@ pub struct Talk {
     /// questions.
     pub probes: Vec<Value>,
     probes_len: u64,
+    /// The line a turn in progress answers (shown above its reply so far),
+    /// and who said it (`speaker.txt`: the teacher; else the person).
+    pub pending: Option<String>,
+    pub pending_by: Option<String>,
     /// The reply so far of a turn in progress.
     pub speaking: Option<String>,
     /// Rows scrolled up from the bottom of the conversation.
@@ -55,6 +59,8 @@ impl Default for Talk {
             turns: Vec::new(),
             probes: Vec::new(),
             probes_len: u64::MAX,
+            pending: None,
+            pending_by: None,
             speaking: None,
             back: 0,
             turns_len: u64::MAX,
@@ -91,6 +97,11 @@ impl Talk {
             // the last probe: the rows sharing the newest time stamp
             let last = rows.last().map(|r| r["time"].clone());
             self.probes = rows.into_iter().filter(|r| Some(&r["time"]) == last.as_ref()).collect();
+            changed = true;
+        }
+        let by = std::fs::read_to_string(dir.join("speaker.txt")).ok().map(|s| s.trim().to_string());
+        if by != self.pending_by {
+            self.pending_by = by;
             changed = true;
         }
         let speaking = std::fs::read_to_string(dir.join("speaking.txt")).ok();

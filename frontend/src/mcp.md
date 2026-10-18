@@ -12,7 +12,7 @@ Intel Phi Jev's `mcp.rs`). Registered with Claude Code at user scope:
 | `talk` | one turn through the learner's API, the record back (`alone: true`: the circuit by itself); the TUI shows it too, since it reads the learner's `turns.jsonl` |
 | `hear` | English text for the learner to read |
 | `probe` | the fixed probe questions to the circuit alone (`probes.txt`), a row each, kept in `probes.jsonl`; the learner hears, learns and counts nothing |
-| `teach` | runs the teacher (`backend/build/teacher`): `lessons` from Qwen (1), or `lesson` NAME, or `measure: true` on the frozen test lines; its printed output back. Minutes a lesson |
+| `teach` | runs the teacher (`backend/build/teacher`): `turns` up the ladder (1), each typed in the TUI, after `stage` NAME moves it there if given; or `measure: true` on the frozen test lines; its printed output back. A minute or two a turn |
 | `stats` | what the learner knows |
 | `judge` | a System One request straight to the decision engine |
 

@@ -1,20 +1,30 @@
-# What the teacher (the decision engine) teaches. A line a lesson:
+# The teacher's ladder (teacher_main.c): Qwen teaches MechJev to
+# communicate, one stage after another, each harder than the one before.
+# The user's ask (2026-10-17): "Qwen needs to prompt increasingly complex
+# prompts", and "MechJev needs to learn to communicate first". A line a
+# stage, in the order they are climbed:
 #   NAME | GOAL | CHECK [| HELD-OUT GOAL [| SHOWN WORDS]]
-# GOAL is what the engine's line should do; it composes the line itself,
-# word by word (teach.c). CHECK is a statement about the learner's reply,
-# judged as a Noul: the lesson is passed when it holds and every
-# requirement in restrictions.txt does. HELD-OUT GOAL, when given, is what
-# the line that tests mastery should do instead (it is never taught).
-# SHOWN WORDS are the words a demonstration may offer the engine besides
-# the learner's own and the line's: the answer's words, which a teacher
-# knows ("What name?" holds no "MechJev"; the engine could not show it).
-greet | Greet the learner and ask how it is. | The reply greets back or says how the one replying is. | | hello hi I am fine good
-yes-no | Ask the learner a yes or no question about something it may like. | The reply answers the question with yes or no. | | yes no I do
-likes | Ask the learner what it likes. | The reply names something the one replying likes. | | I like music books walking
-feeling | Ask the learner how it feels today. | The reply says how the one replying feels. | | I feel happy good fine tired
-name-tell | Tell the learner that its name is MechJev. | The reply says the name MechJev or agrees that it is its name. | | my name is MechJev yes
-name | Ask the learner its name. | The reply says that its name is MechJev. | | my name is MechJev
-day | Ask the learner about its day. | The reply says something about the day of the one replying. | | my day was good fine
-weather | Ask the learner what the weather is like. | The reply says something about the weather. | | the weather is cold warm sunny nice
-thanks | Thank the learner for talking with you. | The reply answers the thanks kindly. | | you are welcome thank
-goodbye | Say goodbye to the learner. | The reply says goodbye. | | goodbye bye good night see you
+# GOAL is what Qwen's line should do; Qwen writes every line itself, a new
+# one each turn. CHECK is a statement about MechJev's reply, judged as a
+# Noul. HELD-OUT GOAL, when given, is what the line of a check should do
+# instead (MechJev alone, never taught on it). SHOWN WORDS are words a
+# taught turn may offer the engine besides MechJev's own and the line's:
+# the answer's words, which a teacher knows ("What is your name?" holds no
+# "MechJev").
+greet | Greet MechJev and ask how it is. | The reply greets back or says how the one replying is. | | hello hi I am fine good
+feeling | Ask MechJev how it feels today. | The reply says how the one replying feels. | | I feel happy good fine tired
+yes-no | Ask MechJev a yes or no question about something it may like. | The reply answers the question with yes or no. | | yes no I do
+name-tell | Tell MechJev that its name is MechJev. | The reply says the name MechJev or agrees that it is its name. | | my name is MechJev yes
+name | Ask MechJev its name. | The reply says that its name is MechJev. | | my name is MechJev
+thanks | Thank MechJev for talking with you. | The reply answers the thanks kindly. | | you are welcome thank
+goodbye | Say goodbye to MechJev. | The reply says goodbye. | | goodbye bye good night see you
+likes | Ask MechJev what it likes. | The reply names something the one replying likes. | | I like music books walking
+day | Ask MechJev about its day. | The reply says something about the day of the one replying. | | my day was good fine
+weather | Ask MechJev what the weather is like. | The reply says something about the weather. | | the weather is cold warm sunny nice
+why | Ask MechJev why it likes something, or why it feels as it does. | The reply gives a reason. | | because it is fun makes me happy
+two-part | Ask MechJev two short things in one line, such as what it likes and how it feels. | The reply answers both things that were asked. | | and I like feel am
+describe | Ask MechJev to describe one simple thing: a color, an animal or a food. | The reply describes the thing in a sentence. | | it is big small red sweet soft
+follow-up | Say one thing about your own day or what you like, then ask MechJev what it thinks of it. | The reply answers what the person said and says what the one replying thinks. | | I think that is nice good too
+about-me | Ask MechJev to tell you about itself in two or three sentences. | The reply says two or more things about the one replying, in sentences. | | I am MechJev like learn words talk
+learning | Ask MechJev what it is learning. | The reply says what the one replying is learning. | | I am learning to talk words English from you
+explain | Ask MechJev to explain in its own words what a simple thing is, such as a friend or a book. | The reply explains the thing in a sentence that makes sense. | | a is someone something who that you

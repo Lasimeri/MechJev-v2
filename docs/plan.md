@@ -114,3 +114,19 @@ Two parts, and only the first touches llama.cpp.
   judges by decisions, and talks to MechJev through MechJev's own server;
   MechJev's replies stay its own (teach.md). A first teacher inside the
   learner, composing its lines word by word, was removed.
+- **The ladder** (the user's, 2026-10-17: "Qwen needs to prompt
+  increasingly complex prompts", "MechJev needs to learn to communicate
+  first", "the repetitions aren't needed"): `lessons.txt` is 17 stages in
+  order of difficulty; each turn Qwen writes a new line (never one it has
+  said) and types it in the TUI, labelled `qwen`; a stage opens with a
+  check of MechJev alone, then a check after every 2 taught turns, and 2
+  of its last 3 checks move it up (teach.md). The engine's choice of
+  lessons and the try-demonstrate-retry loop on one line were removed.
+- **Code after communication** (the user's end goal: MechJev writing
+  simple, functional programs): parked until the ladder's communication
+  stages are climbed. The design measured so far: a C program through the
+  tokenizer loses every bracket and quote (`int main(){puts("hi");return
+  0;}` became 8 tokens, rendered `Int main puts hi; return 0;`, which tcc
+  rejects), so code needs its own marks, renderer, end rule and
+  requirements (compiled and run by tcc in bwrap, the output compared with
+  a reference program's).

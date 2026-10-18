@@ -8,57 +8,92 @@ initially to talk to the MechJev architecture". The program is `teacher`
 and links no llama.cpp:
 
 - **the engine** (xks, `MJ2_ENGINE`, else `XKS_BIND`): Qwen writes the
-  teacher's lines (`POST /v1/generate`), chooses the lesson (a Choice) and
-  judges MechJev's replies (a Noul);
-- **MechJev** (learner serve, `MJ2_BIND`, 127.0.0.1:8092): a try alone is
-  `POST /v1/probe {"message"}` (the probe path: from an empty
-  conversation, nothing heard, learned or counted); a demonstration is
-  `POST /v1/talk {"message", "show"}`, a taught turn in its conversation.
+  teacher's lines (`POST /v1/generate`) and judges MechJev's replies (a
+  Noul);
+- **MechJev** (learner serve, `MJ2_BIND`, 127.0.0.1:8092), through the TUI
+  a person watches: the teacher types its lines there (below, step 4),
+  after `POST /v1/next` has set the turn's settings. Without a TUI
+  (`MJEV2_PANE=`) a check is `POST /v1/probe {"message"}` (from an empty
+  conversation, nothing heard, learned or counted) and a taught turn
+  `POST /v1/talk {"message", "show"}`; `teacher measure` always takes the
+  probe path.
 
 **The line it holds.** Qwen writes only the teacher's side. MechJev's
-replies are always its own: in a demonstration the engine chooses each
+replies are always its own: in a taught turn the engine chooses each
 word among the words MechJev offers (its circuit's, the line's, the
 lesson's shown words), as in any taught turn. MechJev never learns from a
 reply Qwen wrote.
 
-## The lessons (`lessons.txt`)
+## The ladder (`lessons.txt`)
+
+The user's asks (2026-10-17): "Qwen needs to prompt increasingly complex
+prompts", "MechJev needs to learn to communicate first" (code comes after
+it), and "the repetitions aren't needed". The stages are the lines of
+`lessons.txt` in order, each harder than the one before, 17 now: greet,
+feeling, yes-no, name-tell, name, thanks, goodbye, likes, day, weather,
+why, two-part, describe, follow-up, about-me, learning, explain.
 
 `NAME | GOAL | CHECK [| HELD-OUT GOAL [| SHOWN WORDS]]`, a line each:
 
-- **GOAL** is what the teacher's line should do ("Ask the learner how it
-  feels today.").
-- **CHECK** is a statement about MechJev's reply, judged as a Noul: a try
+- **GOAL** is what Qwen's line should do ("Ask MechJev how it feels
+  today.").
+- **CHECK** is a statement about MechJev's reply, judged as a Noul: a turn
   passes when it holds (0.5 or more) and every requirement in
   `restrictions.txt` holds (MechJev's own judging, in its turn record).
-- **HELD-OUT GOAL** is what the test lines should do instead (the name
-  lesson asks without saying the name).
-- **SHOWN WORDS** are the answer's words a demonstration may offer, which
+- **HELD-OUT GOAL** is what a check's line should do instead (the name
+  stage asks without saying the name).
+- **SHOWN WORDS** are the answer's words a taught turn may offer, which
   the line itself may not hold ("What is your name?" holds no "MechJev");
   MechJev hears them first, so they are in its lexicon.
 
-The learner's name, for the name lessons, is MechJev (the user's).
+The learner's name, for the name stages, is MechJev (the user's).
 
-## A lesson (`teacher teach`)
+## A turn on the ladder (`teacher teach N`)
 
-1. **The engine chooses the lesson**, a Choice over the lesson names with
-   MechJev's record in the question: each lesson's times taught, its passes
-   on the test lines, the last lesson's result, and the last 6 lessons in
-   order ("a lesson that has not worked the same way twice running can
-   wait while you teach another").
-2. **Qwen writes the line** (`teacher_write`): the system text makes it a
-   patient English teacher talking with MechJev, a beginner; the user text
-   holds the goal and its last 8 lines ("Say it in your own words, not as
-   you have said it before"). At most 48 tokens, a clock seed, the user's
-   sampling settings (engine.md). The first line is kept, quotation marks
-   taken off. A line that is a test line (marks, spaces and case aside) is
-   written again, 3 times at most.
-3. **MechJev tries alone**, judged.
-4. **Failed: a demonstration**, a taught turn on the same line in
-   MechJev's conversation (the TUI shows it), then another try; 3
-   demonstrations at most.
+1. **Where it is**, read from `lessons.jsonl` (the only state): the stage
+   the last `promote` or `stage` row reached, else the first; the taught
+   turns and checks at it since.
+2. **A check or a taught turn.** A stage opens with a check of MechJev
+   alone, so a stage it has mastered is climbed past at once; after that a
+   check comes after every 2 taught turns (`CHECK_EVERY`).
+3. **Qwen writes a new line** (`teacher_write`, then `next_line`): the
+   system text makes it a patient English teacher talking with MechJev, a
+   beginner; the user text holds the stage's goal (a check's: the held-out
+   goal), the stage's last 6 exchanges (its lines and MechJev's replies)
+   and its last 8 lines ("Write a new line toward the same goal, in other
+   words than every line above"). At most 48 tokens, a clock seed, the
+   user's sampling settings (engine.md); the first line, quotation marks
+   taken off. A line that is a test line or one it has said already
+   (marks, spaces and case aside) is written again, the refused lines shown
+   to it, 4 times at most. The user's ask that made this: "Stop the Qwen
+   model from looping when teaching MechJev": one line had been typed for
+   every try and demonstration of a lesson, 4 times in the greet lesson.
+4. **Typed in the TUI** (`teacher_say_in_tui`), as the user asked: "The
+   local teaching model needs to show up in the harness just like when you
+   type for me". It tells MechJev's server the next turn's settings
+   (`POST /v1/next {alone, show, speaker: "Qwen"}`, used by that turn
+   once), puts the TUI on its talk screen and in the mode the turn needs
+   (F2, seen on the screen: the circuit alone for a check, taught
+   otherwise), types the line and Enter, and reads the turn from
+   `turns.jsonl`. The TUI shows the line, labelled `qwen`, while MechJev
+   answers, and keeps the label in the conversation (the record's
+   `speaker`). Under the driver lock, so no two drivers type at once.
+   `MJEV2_PANE` names the pane (`jev2.0`); empty, the turns go through the
+   API, unseen.
+5. **Judged**: the stage's check on MechJev's reply, and its requirements.
+6. **Up a stage** when 2 of its last 3 checks passed (`PROMOTE`): a
+   `promote` row.
 
-Each lesson is a row in `lessons.jsonl` (mode `teach`): the line, every
-try and demonstration, the demonstrations it took, passed or not.
+Each turn is a row in `lessons.jsonl` (mode `taught` or `check`, `lesson`
+the stage's name, `stage` its number): the line, the reply, the check's
+probability, the requirements, the coherence, passed or not.
+`teacher status` prints where it is; `teacher stage NAME` moves it.
+
+Before the ladder (2026-10-17, f02ffbd to the ladder): the engine chose
+each lesson (a Choice over the names with MechJev's record), and a lesson
+was a try alone, then up to 3 demonstrations each followed by another try,
+all on one line. The user called that repetition and asked for rising
+complexity instead.
 
 ## The test lines (`teacher freeze`, `teacher measure`)
 

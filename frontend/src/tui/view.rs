@@ -992,8 +992,13 @@ fn talk(f: &mut Frame, a: &mut App) {
     // the conversation, as rows of spans
     let mut conv: Vec<Vec<Span>> = Vec::new();
     for t in &a.talk.turns {
+        // who said it: the person, or the teacher (the turn record's speaker)
+        let who = match t["speaker"].as_str() {
+            Some(s) => format!("{:<5}", s.to_lowercase().chars().take(4).collect::<String>()),
+            None => "you  ".to_string(),
+        };
         for (i, l) in wrap(t["person"].as_str().unwrap_or(""), cw.saturating_sub(5)).into_iter().enumerate() {
-            conv.push(vec![faint(if i == 0 { "you  " } else { "     " }), text(l)]);
+            conv.push(vec![faint(if i == 0 { who.clone() } else { "     ".to_string() }), text(l)]);
         }
         let reply = t["reply"].as_str().unwrap_or("");
         let reply = if reply.is_empty() { "(no words yet)" } else { reply };
@@ -1020,6 +1025,16 @@ fn talk(f: &mut Frame, a: &mut App) {
     }
     if a.job.as_ref().is_some_and(|j| j.0 == super::app::Job::Talking) {
         let s = SPIN[a.spin % SPIN.len()];
+        // the line it is answering, labelled as the turn record will be
+        if let Some(p) = &a.talk.pending {
+            let who = match &a.talk.pending_by {
+                Some(s) if !s.is_empty() => format!("{:<5}", s.to_lowercase().chars().take(4).collect::<String>()),
+                _ => "you  ".to_string(),
+            };
+            for (i, l) in wrap(p, cw.saturating_sub(5)).into_iter().enumerate() {
+                conv.push(vec![faint(if i == 0 { who.clone() } else { "     ".to_string() }), text(l)]);
+            }
+        }
         let so_far = a.talk.speaking.clone().unwrap_or_default();
         conv.push(vec![dim("it   "), text(so_far).bold(), dim(format!(" {s}"))]);
     }
