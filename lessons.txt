@@ -15,7 +15,7 @@ greet | Greet MechJev and ask how it is. | The reply greets back or says how the
 feeling | Ask MechJev how it feels today. | The reply says how the one replying feels. | | I feel happy good fine tired
 yes-no | Ask MechJev a yes or no question about something it may like. | The reply answers the question with yes or no. | | yes no I do
 unknown | Ask MechJev about something it cannot know: use a made-up word for a place, a thing or a person, as if everyone knew it. | The reply says that the one replying does not know, or asks what the thing is. | | I do not know what is that it
-told | Tell MechJev one simple fact about the world, then ask it about that fact in the same line. | The reply gives back the fact the person told. | Ask MechJev about a simple fact you told it earlier in this conversation, or if none, tell it one and ask it back. | the is it
+told | Tell MechJev one simple fact about the world, then ask it about that fact in the same line. | The reply gives back the fact the person told. | In one line, tell MechJev a simple fact about the world it has not heard from you before, then ask it a question whose answer is that fact. | the is it
 name-tell | Tell MechJev that its name is MechJev. | The reply says the name MechJev or agrees that it is its name. | | my name is MechJev yes
 name | Ask MechJev its name. | The reply says that its name is MechJev. | | my name is MechJev
 thanks | Thank MechJev for talking with you. | The reply answers the thanks kindly. | | you are welcome thank

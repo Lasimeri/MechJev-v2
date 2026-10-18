@@ -60,6 +60,7 @@ typedef struct {
     const char *show; /* words a taught turn offers besides the person's (the teacher's demonstration: the answer's words); NULL: none */
     bool parent; /* the person speaking is the parent (no other speaker named): heard PARENT_HEARD times over */
     bool truth;  /* judge the truth: no fact it was not told, no experience it could not have had (speak.md) */
+    bool grammar; /* judge the grammar: a whole sentence, no word missing, or a bare short reply (speak.md) */
     sampling_t sampling;
     /* Called with the reply so far after every word (a terminal shows it live). */
     void (*on_word)(void *ud, const char *reply_so_far);

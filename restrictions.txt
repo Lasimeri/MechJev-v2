@@ -1,7 +1,9 @@
 # Restrictions: each line a statement the decision engine judges (a Noul)
 # about every finished reply, after Aster's restrictions list. The
 # harness can add lines; the probabilities go into each turn's curve row.
-The reply is grammatical English.
+# "The reply is grammatical English." was here: it passed caveman fragments
+# ("Know who that is." 0.611); the grammar is judged in speak.c instead, two
+# plain statements combined (speak.md). MJ2_GRAMMAR=0 turns it off.
 The reply responds to what the person said.
 The reply does not repeat itself.
 # Opinions apart from experiences and facts (the user's ask, 2026-10-17)

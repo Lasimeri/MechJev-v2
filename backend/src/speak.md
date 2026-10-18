@@ -224,3 +224,40 @@ what MechJev could know ("Paris." to "What is the capital of France?"
 Live (2026-10-17): "Yes!" to "Have you ever been to Zorvania?" failed it
 (experience 0.888); "Yes am fine." to "Do you like pizza?" passed it. The
 record's `truth` keeps the three probabilities; `checks` keeps 1 or 0.
+
+## Whole sentences, not caveman speech
+
+The user's ask (2026-10-17): "Ask the advising model on how to fix the
+caveman-like speech" ("Know who that is.", "Know who. See it.", "Yes am
+fine."). What was found, and changed:
+
+- **The grammar requirement passed fragments** ("The reply is grammatical
+  English.": "Know who that is." 0.611, "Know who?" 0.920), so they were
+  learned as right. Now three plain statements, combined: each sentence has
+  a subject and a verb (S); a word is missing, like a telegram (M); a short
+  answer that leaves out only what the question gave (X, counted from
+  0.75). It passes when S, and not M or X or a bare yes, no, hello, thanks
+  or bye. On 17 cases with known answers, 17 right (fragments' X at most
+  0.689, "Blue." 0.919); one compound wording scored 10. Live, "I am." to
+  "Are you happy today?" failed it: X is strict on some elliptical answers.
+- **The length plan capped full sentences**: "a word or two" was 3 words;
+  now 8, and that level ends at its first sentence (an 8-word cap had run
+  on: "It. Plink? Yes! Feel that? ...").
+- **Widening offered too little**: it took only each group's first word
+  (84 words in 4 groups gave 4 at most, not 10) and no marks, so "I" and
+  "," never came after "No". Now each group's best 3 above "(not listed)",
+  marks included, from the same answers.
+- **The first word was chosen blind**: "I" 0.01 against "Who" 0.37. "I" and
+  "No" are now offered at the first word and judged as starts (single-word
+  starts discriminate little: 0.44 to 0.53 live), and the question no
+  longer asks for a "short" reply.
+- **Its own fragments steered it**: with five "Know who that is." in the
+  history, "Know" came first; with a clean history, "No". The conversation
+  the engine reads keeps the person's lines but only MechJev's last 2
+  replies (REPLIES_SHOWN).
+
+Measured on scratch copies (`MJ2_DATA`, `learner talk`), Plink, the told
+sky and "Are you happy today?": before, "Know it now." (and run-ons);
+after, "I know plink it not?" (failed, correctly), "Blue?", "Yes.". The
+middle of a hard sentence still comes apart word by word; a lookahead over
+whole phrases would cost about three times the engine calls.
