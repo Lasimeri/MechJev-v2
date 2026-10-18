@@ -1590,14 +1590,17 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
              * gates' alone. Measured: wrong habit words 0.28 to 0.30 ("Wet"
              * to a name question), right ones 0.52 and above
              * (~/.cache/mechjev-v2-judge-word.txt). */
-            /* A sentence's end or the end is judged too: whether the reply as
-             * it is says all it should (complete_q). Passed unasked, the
-             * circuit's one-word habit ended "My" at once ("My.", the day
-             * stage); a comma passes. */
-            bool may_end = false;
-            for (size_t i = 0; i < no; i++)
+            /* A sentence's end or the end is judged too, in a taught turn with
+             * the teacher's words: whether the reply as it is says all it
+             * should (complete_q). Passed unasked, the circuit's one-word habit
+             * ended "My" at once ("My.", the day stage). Not in a turn alone: there
+             * it refused right ends and line words were tacked on ("I am good
+             * today MechJev.", "I am feeling fine now are."); a comma passes. */
+            bool ask_ends = show_w && ns_show, may_end = false;
+            for (size_t i = 0; ask_ends && i < no; i++)
                 may_end |= t > 0 && (order[i] == end || sentence_end(l->v[order[i]].word));
-            if (cfg->veto && !(is_punct(l->v[word].word) && !sentence_end(l->v[word].word))) {
+            bool ends_first = is_punct(l->v[word].word) || word == end;
+            if (cfg->veto && (ask_ends ? !(ends_first && !sentence_end(l->v[word].word) && word != end) : !ends_first)) {
                 char **w2 = xmalloc((t + 2) * sizeof *w2);
                 for (size_t j = 0; j < t; j++)
                     w2[j] = g->said[j];
