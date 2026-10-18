@@ -1374,6 +1374,11 @@ static int judge_teacher_check(const speak_cfg_t *cfg, const char *person, const
  * (~/.cache/mechjev-v2-veto-calib.tsv): at 0.5, 14 lines right, 3 wrong, none
  * abstained; at 0.6, 13 right, 1 wrong, 3 abstained (said it did not know) */
 #define COHERENCE_FLOOR 0.6
+/* the teacher's own words in a taught turn (show): the stage's words, little
+ * risk of a habit word, and the first word of a sentence comes only to "a
+ * fitting reply could follow" (0.5: "My" 0.53 for "My day was good.", where
+ * the one-word stages' 0.6 left it saying "What day?") */
+#define COHERENCE_FLOOR_SHOWN 0.5
 
 typedef struct {
     int32_t first;   /* the first word, -1: the gates' own */
@@ -1423,12 +1428,13 @@ static void gen_free(gen_t *g)
 }
 
 /* The first word of pool (in its own order) the engine finds coherent
- * enough to say next (viability_q, at COHERENCE_FLOOR): its index, -1 if
+ * enough to say next (viability_q, at floor or above): its index, -1 if
  * none is, -2 if the engine did not answer. Each word and its coherence go
  * onto vj, labelled src. The engine only says yes or no to a word; the
  * order is the pool's. */
 static int first_coherent(const learner_t *l, const speak_cfg_t *cfg, const char *state, char **said, size_t t,
-                          const int32_t *pool, size_t np, const char *src, json_t *vj, cost_t *cost, char *err,
+                          const int32_t *pool, size_t np, const char *src, double floor, json_t *vj, cost_t *cost,
+                          char *err,
                           size_t errlen)
 {
     if (!np)
@@ -1459,7 +1465,7 @@ static int first_coherent(const learner_t *l, const speak_cfg_t *cfg, const char
         jobj_set(o, "from", jstr(src));
         jobj_set(o, "coherence", jf64(round(v * 1e4) / 1e4));
         jarr_push(vj, o);
-        if (chosen < 0 && v >= COHERENCE_FLOOR)
+        if (chosen < 0 && v >= floor)
             chosen = (int)i;
     }
     json_free(resp);
@@ -1658,7 +1664,8 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
                         used_tok[best] = true;
                         line[nl++] = pl->tok[best];
                     }
-                    int c2 = first_coherent(l, cfg, state, g->said, t, line, nl, "line", vj, cost, err, errlen);
+                    int c2 = first_coherent(l, cfg, state, g->said, t, line, nl, "line", COHERENCE_FLOOR, vj, cost,
+                                            err, errlen);
                     if (c2 == -2) {
                         json_free(vj);
                         json_free(step);
@@ -1691,7 +1698,8 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
                         if (!dup)
                             shown[nsw++] = w;
                     }
-                    int c3 = first_coherent(l, cfg, state, g->said, t, shown, nsw, "shown", vj, cost, err, errlen);
+                    int c3 = first_coherent(l, cfg, state, g->said, t, shown, nsw, "shown", COHERENCE_FLOOR_SHOWN, vj, cost,
+                                            err, errlen);
                     if (c3 == -2) {
                         json_free(vj);
                         json_free(step);
