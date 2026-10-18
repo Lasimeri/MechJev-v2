@@ -676,6 +676,8 @@ int main(int argc, char **argv)
     memset(&c, 0, sizeof c);
     c.t.engine = conf_get("MJ2_ENGINE", conf_get("XKS_BIND", "127.0.0.1:8090"));
     c.t.learner = conf_get("MJ2_BIND", "127.0.0.1:8092");
+    c.dir = data_dir();
+    c.lessons_log = join(c.dir, "lessons.jsonl");
     {
         char *h = harness_dir();
         const char *nm = getenv("MJ2_NAME"), *base = strrchr(c.dir, '/');
@@ -689,8 +691,6 @@ int main(int argc, char **argv)
         }
         free(h);
     }
-    c.dir = data_dir();
-    c.lessons_log = join(c.dir, "lessons.jsonl");
     /* the TUI to type into, as a person would: MJEV2_PANE (jev2.0); empty:
      * the API, nothing shown */
     const char *pane = getenv("MJEV2_PANE");
