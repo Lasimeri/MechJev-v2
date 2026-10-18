@@ -155,6 +155,8 @@ Qwen writes. `mjev2 teach [N]` starts the engine and MechJev first.
 | `MJ2_MEMORY` | `0` | the fast memory's weight in a word's score (0: it learns but does not speak) |
 | `MJ2_NGRAM` | `1` | the meaning-gated n-gram memory's weight (times its gate); 0: it learns, silent (backend/src/ngram.md) |
 | `MJ2_TRUTH` | `1` | judge the truth: no fact it was not told, no experience it could not have had; opinions free (speak.md); 0 off |
+| `MJ2_GRAMMAR` | `1` | judge the grammar: no sentence without its subject, none broken (speak.md); 0 off |
+| `MJ2_PHRASES` | `0` | the lookahead judges two-word phrases (measured worse and slower; speak.md) |
 | `MJ2_RECENT_SHARE` | `0` | share of rehearsal passes drawn from the newest examples |
 | `MJ2_PROBES`, `MJ2_PROBE_REPEATS` | `probes.txt`, `3` | the probe questions, and times each is asked |
 | `MJ2_VARS`, `MJ2_CHECKS` | `variables.txt`, `restrictions.txt` | the variables and the requirements |

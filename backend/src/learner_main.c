@@ -216,6 +216,8 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
         s->min_p = strtod(v, NULL);
     if ((v = getenv("MJ2_REPEAT_PENALTY")) && *v)
         s->repeat_penalty = strtod(v, NULL);
+    if ((v = getenv("MJ2_PHRASES")) && *v)
+        c->cfg.phrases = strcmp(v, "0") != 0;
     if ((v = getenv("MJ2_GRAMMAR")) && *v)
         c->cfg.grammar = strcmp(v, "0") != 0;
     if ((v = getenv("MJ2_TRUTH")) && *v)
@@ -936,6 +938,7 @@ static void usage(void)
           "  learner export FILE.c       the discrete circuit as C\n"
           "  learner probe               the fixed questions to the circuit alone (probes.jsonl)\n"
           "  learner memory-rebuild      the fast memory made again from turns.jsonl (prints its agreement)\n"
+          "  learner rejudge             past passed turns judged by today's requirements; failures marked\n"
           "  learner circuit-rebuild [P] the circuit made new and retrained from the replay (P passes)\n"
           "  learner serve [--bind B]    the HTTP API (default 127.0.0.1:8092)\n"
           "  learner reset --yes         forget everything\n"
@@ -1105,6 +1108,23 @@ int main(int argc, char **argv)
             sb_free(&b);
             json_free(rep);
         }
+    } else if (!strcmp(cmd, "rejudge")) {
+        /* past passed turns judged by today's requirements; then the memory made
+         * again from the new marks and the store saved (the n-gram memory is
+         * made from turns.jsonl at every start) */
+        size_t judged, failed, examples;
+        json_t *rep = NULL;
+        rc = speak_rejudge(c.l, &c.cfg, c.turns, &judged, &failed, &examples, err, sizeof err) ||
+                     speak_memory_rebuild(c.l, &c.cfg, c.turns, &rep, err, sizeof err) ||
+                     learner_save(c.l, c.store, err, sizeof err)
+                 ? 1
+                 : 0;
+        json_free(rep);
+        if (rc)
+            fprintf(stderr, "error: %s\n", err);
+        else
+            printf("judged again %zu passed taught turns: %zu fail now; %zu replay examples marked failed\n",
+                   judged, failed, examples);
     } else if (!strcmp(cmd, "hear"))
         rc = cmd_hear(&c, argc - 2, argv + 2);
     else if (!strcmp(cmd, "stats")) {

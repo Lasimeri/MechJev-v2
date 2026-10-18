@@ -12,6 +12,7 @@ HTTP at `MJ2_ENGINE`, else `XKS_BIND`.
 | `stats` | lexicon, speakable words, variable slots, circuit shape, turns, replay, the most used words |
 | `export FILE.c` | the discrete circuit as a C function |
 | `memory-rebuild` | the fast memory made again from turns.jsonl (below) |
+| `rejudge` | past passed taught turns judged by today's grammar and truth; failures marked in turns.jsonl and the replay, the memory rebuilt (speak.md) |
 | `circuit-rebuild [P]` | the circuit made new and retrained from the replay (below) |
 | `serve [--bind B]` | the HTTP API on 127.0.0.1:8092 (below) |
 | `reset --yes` | forget everything |

@@ -233,13 +233,28 @@ fine."). What was found, and changed:
 
 - **The grammar requirement passed fragments** ("The reply is grammatical
   English.": "Know who that is." 0.611, "Know who?" 0.920), so they were
-  learned as right. Now three plain statements, combined: each sentence has
-  a subject and a verb (S); a word is missing, like a telegram (M); a short
-  answer that leaves out only what the question gave (X, counted from
-  0.75). It passes when S, and not M or X or a bare yes, no, hello, thanks
-  or bye. On 17 cases with known answers, 17 right (fragments' X at most
-  0.689, "Blue." 0.919); one compound wording scored 10. Live, "I am." to
-  "Are you happy today?" failed it: X is strict on some elliptical answers.
+  learned as right. Now two plain statements about the caveman pattern: a
+  sentence has no subject (it starts with a verb, as "Know who that is." or
+  "Am too."), or a sentence is broken (its words do not fit together, as
+  "My it is."). Either at 0.5 or more fails the reply (`MJ2_GRAMMAR=0`
+  off). On 27 cases framed as a live turn frames them, 26 right (good
+  replies: no subject at most 0.375, broken at most 0.481; "Know who that
+  is." no subject 0.794; missed: "Know who?" 0.446).
+  **Two designs before it failed on real replies**: three statements (a
+  subject and a verb, a word missing, an elliptical answer) scored 17 of 17
+  in a test whose state showed the reply twice, but fired on good sentences
+  in a live turn's framing ("Hello, I am fine." a word missing 0.792); a
+  Choice of three (complete / fragment / not English) overlapped on the 89
+  past replies ("Yes." 0.74 to 0.83 complete, "Know who?" 0.86). A test of
+  a judge must frame its state exactly as the live judge does.
+- **The past replies judged again** (`learner rejudge`, the user's choice):
+  every passed taught turn judged by the new grammar and truth only (the old
+  requirements were judged with the history of their time), a failure
+  marked in its record (`rejudged`) and in the replay (each run of examples
+  teaching exactly that reply). 26 of 89 failed: about 21 fragments (the
+  whole "Know who" family, "Am too.", "Like you!") and about 5 valid
+  elliptical replies ("I am too.", "I am."); 164 replay examples; the
+  n-gram memory went from 491 entries to 294.
 - **The length plan capped full sentences**: "a word or two" was 3 words;
   now 8, and that level ends at its first sentence (an 8-word cap had run
   on: "It. Plink? Yes! Feel that? ...").
@@ -261,3 +276,10 @@ sky and "Are you happy today?": before, "Know it now." (and run-ons);
 after, "I know plink it not?" (failed, correctly), "Blue?", "Yes.". The
 middle of a hard sentence still comes apart word by word; a lookahead over
 whole phrases would cost about three times the engine calls.
+
+**The phrase lookahead** (`MJ2_PHRASES=1`, the user's choice, built and
+measured, off): each candidate word is continued first, among the words
+MechJev can say, and two-word phrases are judged as starts. On the Plink
+line, the told sky and "Are you happy today?" it gave "I do that know plink
+it?", "Blue?", "I am!" in 79, 37 and 43 s, against "I do.", "Blue.",
+"Yes." in 38, 29 and 34 s without it: worse and slower.

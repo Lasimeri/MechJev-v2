@@ -61,6 +61,7 @@ typedef struct {
     bool parent; /* the person speaking is the parent (no other speaker named): heard PARENT_HEARD times over */
     bool truth;  /* judge the truth: no fact it was not told, no experience it could not have had (speak.md) */
     bool grammar; /* judge the grammar: a whole sentence, no word missing, or a bare short reply (speak.md) */
+    bool phrases; /* the lookahead judges two-word phrases, not single words (speak.md; MJ2_PHRASES) */
     sampling_t sampling;
     /* Called with the reply so far after every word (a terminal shows it live). */
     void (*on_word)(void *ud, const char *reply_so_far);
@@ -115,6 +116,13 @@ int speak_memory_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns
  * nothing of it is stored. */
 int speak_ngram_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns_path, size_t *turns,
                         size_t *steps, char *err, size_t errlen);
+/* Every passed taught turn of turns.jsonl judged again by today's
+ * requirements (the user's choice, 2026-10-17: the caveman replies had
+ * passed the old grammar). A reply that fails now is marked so in its record
+ * ("rejudged") and in the replay (each run of examples teaching exactly
+ * it), so it is not rehearsed as right again. turns.jsonl is rewritten. */
+int speak_rejudge(learner_t *l, const speak_cfg_t *cfg, const char *turns_path, size_t *judged, size_t *now_failed,
+                  size_t *examples, char *err, size_t errlen);
 
 int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *person,
                char **reply, json_t **record, char *err, size_t errlen);

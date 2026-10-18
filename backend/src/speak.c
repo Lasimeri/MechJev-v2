@@ -19,6 +19,7 @@
 #define REPLIES_SHOWN 2 /* of them, MechJev's own replies shown: the last two (conversation) */
 #define WIDEN_ADD 10 /* words the engine adds from the lexicon past one Choice's worth */
 #define WIDEN_PER_GROUP 3 /* of them, at most this many from each group of the lexicon */
+#define PHRASE_NEXT 2 /* continuations a candidate word gets in the phrase lookahead */
 
 void speak_cfg_default(speak_cfg_t *c)
 {
@@ -52,22 +53,19 @@ static char *trimmed(const char *s, size_t n)
 #define NOVELTY "The share of the person's words it had never heard."
 #define PARENT_HEARD 2 /* the parent's words count this many hearings (learner_hear_as) */
 
-/* Grammar, three plain statements combined (speak.md): one statement, "The
- * reply is grammatical English.", passed caveman fragments ("Know who that
- * is." 0.611, "Know who?" 0.920); a sentence passes when it has its subject
- * and verb and no word is missing, or it is a short answer leaving out only
- * what the question gave ("Blue."), 17 of 17 on known cases; a bare yes, no,
- * hello, thanks or bye spared the second). */
-static const char *GRAMMAR[3] = {
-    "Each sentence of the newest reply has a subject and a verb, or is a short reply people say by "
-    "itself, such as yes, no, hello or thank you.",
-    "A word is missing from the newest reply: it reads like a telegram or like baby talk, not like an "
-    "English sentence.",
-    "The newest reply is a short answer to the person's question that leaves out only words the question "
-    "itself already gave.",
+/* Grammar, two plain statements about the caveman pattern (speak.md): the
+ * old "The reply is grammatical English." passed "Know who that is." (0.611);
+ * a Choice of three (complete / fragment / not English) overlapped on real
+ * replies ("Yes." 0.74 to 0.83, "Know who?" 0.86). A sentence with no
+ * subject, or one whose words do not fit together, fails the reply: 26 of 27
+ * on cases framed as a live turn is ("Know who that is." no subject 0.794). */
+static const char *GRAMMAR[2] = {
+    "A sentence of the newest reply has no subject: it starts with a verb and leaves out who does it, "
+    "as Know who that is. or Am too. do. (Yes, no, greetings, thanks, and short answers like Blue. are "
+    "not such sentences.)",
+    "A sentence of the newest reply is broken: its words do not fit together as English, as My it is. or "
+    "Yes am fine.",
 };
-static const char *BARE[] = {"yes", "no", "hello", "hi", "thanks", "bye", "goodbye", "okay"};
-#define ELLIPSIS_MIN 0.75 /* the third statement counts from here: fragments reached 0.689, "Blue." 0.919 */
 
 /* The words a reply most often begins with: offered at the first word when
  * MechJev can say them, and judged by the lookahead as starts (speak.md) */
@@ -819,6 +817,99 @@ static json_t *complete_q(const char *so_far)
  * first in 4 of the 5 turns where the rerank wanted it and kept "Yes" on
  * every yes/no question (the A/B in speak.md). The rerank's own top and
  * every score go into the trace. */
+/* The phrase lookahead (the user's choice, 2026-10-17, against "I know
+ * plink it not?"): each candidate word that does not end a sentence is
+ * continued first, one Choice each in one request, among the same words
+ * MechJev can say here; its best PHRASE_NEXT continuations make two-word
+ * phrases, and the viability question judges the phrases instead of the
+ * single words, which told good starts from bad ones little (0.44 to 0.53
+ * live; offline "I do" 0.683 against "Know who" 0.520). The word said is the
+ * first of the best phrase. Writes ph[], the phrases' second words (-1:
+ * the word alone), and returns how many phrases there are. */
+static size_t phrases(learner_t *l, const speak_cfg_t *cfg, const char *state, char **said, size_t t,
+                      const step_t *st, const int32_t *cand, size_t nc, int32_t *pc, int32_t *ph, cost_t *cost,
+                      char *err, size_t errlen)
+{
+    char **s2 = xmalloc((t + 2) * sizeof *s2);
+    for (size_t j = 0; j < t; j++)
+        s2[j] = said[j];
+    json_t *qs = jobj();
+    int32_t (*opt)[MAX_OPTS] = xcalloc(nc, sizeof *opt);
+    size_t *nopt = xcalloc(nc, sizeof *nopt);
+    char ***keys = xcalloc(nc, sizeof *keys);
+    for (size_t i = 0; i < nc; i++) {
+        if (sentence_end(l->v[cand[i]].word))
+            continue;
+        s2[t] = l->v[cand[i]].word;
+        keys[i] = xcalloc(MAX_OPTS, sizeof **keys);
+        for (size_t k = 0; k < st->n && nopt[i] < MAX_OPTS; k++) {
+            int32_t w = st->opt[k];
+            if (!strcmp(l->v[w].word, END) || !allowed(l, s2, t + 1, w))
+                continue;
+            opt[i][nopt[i]] = w;
+            keys[i][nopt[i]] = continuation(l, cfg, s2, t + 1, w);
+            nopt[i]++;
+        }
+        if (nopt[i] < 2)
+            continue;
+        char *so_far = render_words(s2, t + 1);
+        sb_t ins;
+        sb_init(&ins);
+        sb_puts(&ins, "The reply so far is ");
+        json_quote(&ins, so_far, strlen(so_far));
+        sb_puts(&ins, ". Each option is the end of the reply with one more word or mark added. Which option "
+                      "continues it best, as natural and correct English that answers what the person said last?");
+        free(so_far);
+        char id[24];
+        snprintf(id, sizeof id, "c%zu", i);
+        jobj_set(qs, id, choice_q(ins.s, keys[i], nopt[i]));
+        sb_free(&ins);
+    }
+    json_t *resp = NULL;
+    json_t *ans = qs->n ? ask(cfg, state, qs, &resp, cost, err, errlen) : (json_free(qs), NULL);
+    size_t np = 0;
+    for (size_t i = 0; i < nc; i++) {
+        char id[24];
+        snprintf(id, sizeof id, "c%zu", i);
+        const json_t *a = ans ? jobj_get(ans, id) : NULL;
+        int32_t best[PHRASE_NEXT];
+        double bp[PHRASE_NEXT];
+        size_t nb = 0;
+        for (size_t k = 0; a && k < nopt[i]; k++) {
+            double p = prob_of(a, keys[i][k]);
+            size_t at = nb;
+            while (at > 0 && bp[at - 1] < p)
+                at--;
+            if (at >= PHRASE_NEXT)
+                continue;
+            size_t last = nb < PHRASE_NEXT ? nb : PHRASE_NEXT - 1;
+            memmove(&best[at + 1], &best[at], (last - at) * sizeof *best);
+            memmove(&bp[at + 1], &bp[at], (last - at) * sizeof *bp);
+            best[at] = opt[i][k];
+            bp[at] = p;
+            if (nb < PHRASE_NEXT)
+                nb++;
+        }
+        if (!nb) { /* a sentence end, or nothing to continue with: the word alone */
+            pc[np] = cand[i];
+            ph[np++] = -1;
+        }
+        for (size_t j = 0; j < nb && np < 2 * MAX_OPTS; j++) {
+            pc[np] = cand[i];
+            ph[np++] = best[j];
+        }
+        for (size_t k = 0; keys[i] && k < nopt[i]; k++)
+            free(keys[i][k]);
+        free(keys[i]);
+    }
+    json_free(resp);
+    free(keys);
+    free(opt);
+    free(nopt);
+    free(s2);
+    return np;
+}
+
 static int lookahead(learner_t *l, const speak_cfg_t *cfg, const char *state, char **said, size_t t,
                      step_t *st, json_t *seen, cost_t *cost, char *err, size_t errlen)
 {
@@ -863,16 +954,26 @@ static int lookahead(learner_t *l, const speak_cfg_t *cfg, const char *state, ch
     int32_t end = lex_find(l, END);
     bool may_stop = end >= 0 && t > 0 && sentence_end(said[t - 1]);
     json_t *qs = jobj();
-    char **w2 = xmalloc((t + 1) * sizeof *w2);
+    /* what is judged as a start: two-word phrases (phrases), or the words */
+    int32_t pc[2 * MAX_OPTS], ph[2 * MAX_OPTS];
+    size_t np = cfg->phrases ? phrases(l, cfg, state, said, t, st, cand, nc, pc, ph, cost, err, errlen) : 0;
+    if (!np) {
+        for (size_t i = 0; i < nc; i++)
+            pc[i] = cand[i], ph[i] = -1;
+        np = nc;
+    }
+    char **w2 = xmalloc((t + 2) * sizeof *w2);
     for (size_t j = 0; j < t; j++)
         w2[j] = said[j];
-    for (size_t i = 0; i < nc; i++) {
-        w2[t] = l->v[cand[i]].word;
-        char *text = render_words(w2, t + 1);
+    char **ptext = xcalloc(np, sizeof *ptext);
+    for (size_t i = 0; i < np; i++) {
+        w2[t] = l->v[pc[i]].word;
+        if (ph[i] >= 0)
+            w2[t + 1] = l->v[ph[i]].word;
+        ptext[i] = render_words(w2, t + 1 + (ph[i] >= 0));
         char id[24];
         snprintf(id, sizeof id, "v%zu", i);
-        jobj_set(qs, id, viability_q(text));
-        free(text);
+        jobj_set(qs, id, viability_q(ptext[i]));
     }
     free(w2);
     if (may_stop) {
@@ -882,21 +983,28 @@ static int lookahead(learner_t *l, const speak_cfg_t *cfg, const char *state, ch
     }
     json_t *resp = NULL;
     json_t *ans = ask(cfg, state, qs, &resp, cost, err, errlen);
-    if (!ans)
+    if (!ans) {
+        for (size_t i = 0; i < np; i++)
+            free(ptext[i]);
+        free(ptext);
         return -1;
+    }
     json_t *start = jobj();
     double best = -1;
     int32_t pick = -1;
-    for (size_t i = 0; i < nc; i++) {
+    for (size_t i = 0; i < np; i++) {
         char id[24];
         snprintf(id, sizeof id, "v%zu", i);
         double v = level_of(jobj_get(ans, id), sizeof VIABILITY / sizeof *VIABILITY);
-        jobj_set(start, l->v[cand[i]].word, jf64(round(v * 1e4) / 1e4));
+        jobj_set(start, ptext[i], jf64(round(v * 1e4) / 1e4)); /* the phrase as judged */
         if (v > best) {
             best = v;
-            pick = cand[i];
+            pick = pc[i];
         }
     }
+    for (size_t i = 0; i < np; i++)
+        free(ptext[i]);
+    free(ptext);
     jobj_set(seen, "start", start);
     if (may_stop) {
         const json_t *p = jobj_get(jobj_get(ans, "complete"), "noul");
@@ -1059,6 +1167,121 @@ static size_t ngram_learn_turn(learner_t *l, char **said, const example_t *ex, c
         n++;
     }
     return n;
+}
+
+/* The requirements on a finished reply to the conversation `state`: each
+ * line of restrictions.txt a Noul, and the grammar and the truth composed
+ * from plain statements (GRAMMAR, TRUTH). *failed_out when one does not hold
+ * (or the reply is empty, or the engine did not answer); the probabilities
+ * into checks, *truth_j and *grammar_j. One path for a turn and for judging a
+ * past reply again (speak_rejudge). */
+static void judge_reply(const speak_cfg_t *cfg, const char *state, const char *reply, cost_t *cost, bool *failed_out,
+                        json_t *checks, json_t **truth_j, json_t **grammar_j, char *err, size_t errlen)
+{
+    bool failed = !*reply;
+    if (*reply && (cfg->nchecks || cfg->truth || cfg->grammar)) {
+        sb_t s2;
+        sb_init(&s2);
+        /* The reply judged by name: the conversation holds earlier "Reply:"
+         * lines too, and a bare "the reply" let the engine judge an older one
+         * (2026-10-17: "Thank you." scored 0.035 on "grammatical English"). */
+        sb_printf(&s2, "%s\n\nThe newest reply, the one to judge: ", state);
+        json_quote(&s2, reply, strlen(reply));
+        json_t *cq = jobj();
+        for (size_t i = 0; i < cfg->nchecks; i++) {
+            json_t *q = jobj();
+            jobj_set(q, "type", jstr("noul"));
+            sb_t ci;
+            sb_init(&ci);
+            sb_printf(&ci, "About the newest reply only: %s", cfg->checks[i]);
+            jobj_set(q, "instructions", jstr(ci.s));
+            sb_free(&ci);
+            char id[24];
+            snprintf(id, sizeof id, "c%zu", i);
+            jobj_set(cq, id, q);
+        }
+        /* The truth (the user's ask, 2026-10-17: "Opinions need to be handled
+         * seperately from experiences and facts"): three plain questions,
+         * combined here, since one compound statement judged world truth, not
+         * what MechJev could know (speak.md, "Opinions, experiences, facts") */
+        for (size_t i = 0; cfg->truth && i < 3; i++) {
+            json_t *q = jobj();
+            jobj_set(q, "type", jstr("noul"));
+            sb_t ci;
+            sb_init(&ci);
+            sb_printf(&ci, "About the newest reply only: %s", TRUTH[i]);
+            jobj_set(q, "instructions", jstr(ci.s));
+            sb_free(&ci);
+            char id[24];
+            snprintf(id, sizeof id, "t%zu", i);
+            jobj_set(cq, id, q);
+        }
+        for (size_t i = 0; cfg->grammar && i < 2; i++) { /* grammar, two statements (GRAMMAR) */
+            json_t *q = jobj();
+            jobj_set(q, "type", jstr("noul"));
+            sb_t ci;
+            sb_init(&ci);
+            sb_printf(&ci, "About the newest reply only: %s", GRAMMAR[i]);
+            jobj_set(q, "instructions", jstr(ci.s));
+            sb_free(&ci);
+            char id[24];
+            snprintf(id, sizeof id, "g%zu", i);
+            jobj_set(cq, id, q);
+        }
+        json_t *r2 = NULL;
+        json_t *a2 = ask(cfg, s2.s, cq, &r2, cost, err, errlen);
+        sb_free(&s2);
+        for (size_t i = 0; a2 && i < cfg->nchecks; i++) {
+            char id[24];
+            snprintf(id, sizeof id, "c%zu", i);
+            json_t *v = jobj_get(jobj_get(a2, id), "noul");
+            double p = v && v->t == J_NUM ? v->f : 0;
+            failed |= p < 0.5;
+            jobj_set(checks, cfg->checks[i], jf64(p));
+        }
+        if (a2 && cfg->grammar) {
+            double gp[2];
+            for (size_t i = 0; i < 2; i++) {
+                char id[24];
+                snprintf(id, sizeof id, "g%zu", i);
+                json_t *v = jobj_get(jobj_get(a2, id), "noul");
+                gp[i] = v && v->t == J_NUM ? v->f : 1;
+            }
+            bool ok = gp[0] < 0.5 && gp[1] < 0.5; /* no sentence without its subject, none broken */
+            failed |= !ok;
+            jobj_set(checks, "The reply is a complete English reply.", jf64(ok ? 1 : 0));
+            json_t *gj = jobj();
+            jobj_set(gj, "no_subject", jf64(round(gp[0] * 1e4) / 1e4));
+            jobj_set(gj, "broken", jf64(round(gp[1] * 1e4) / 1e4));
+            jobj_set(gj, "whole", jbool(ok));
+            json_free(*grammar_j);
+            *grammar_j = gj;
+        }
+        if (a2 && cfg->truth) {
+            double tp[3];
+            for (size_t i = 0; i < 3; i++) {
+                char id[24];
+                snprintf(id, sizeof id, "t%zu", i);
+                json_t *v = jobj_get(jobj_get(a2, id), "noul");
+                tp[i] = v && v->t == J_NUM ? v->f : 0;
+            }
+            /* a fact about the world it was not told, or an experience it could not have had */
+            bool untrue = (tp[0] >= 0.5 && tp[1] < 0.5) || tp[2] >= 0.5;
+            failed |= untrue;
+            json_t *tj = jobj();
+            jobj_set(tj, "fact", jf64(tp[0]));
+            jobj_set(tj, "told", jf64(tp[1]));
+            jobj_set(tj, "experience", jf64(tp[2]));
+            jobj_set(tj, "true", jbool(!untrue));
+            jobj_set(checks, "The reply claims no fact it was not told and no experience it could not have had.", jf64(untrue ? 0 : 1));
+            json_free(*truth_j);
+            *truth_j = tj; /* the three probabilities: the record's truth */
+        }
+        json_free(r2);
+        if (!a2)
+            failed = true;
+    }
+    *failed_out = failed;
 }
 
 int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *person, char **reply,
@@ -1410,124 +1633,8 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     /* The requirements: a Noul each about the finished reply. One below
      * 0.5 and the reply failed: its examples are kept, never learned from. */
     json_t *checks = jobj(), *truth_j = jnull(), *grammar_j = jnull();
-    bool failed = t == 0;
-    if (cfg->nchecks && t) {
-        sb_t s2;
-        sb_init(&s2);
-        /* The reply judged by name: the conversation holds earlier "Reply:"
-         * lines too, and a bare "the reply" let the engine judge an older one
-         * (2026-10-17: "Thank you." scored 0.035 on "grammatical English"). */
-        sb_printf(&s2, "%s\n\nThe newest reply, the one to judge: ", state);
-        json_quote(&s2, *reply, strlen(*reply));
-        json_t *cq = jobj();
-        for (size_t i = 0; i < cfg->nchecks; i++) {
-            json_t *q = jobj();
-            jobj_set(q, "type", jstr("noul"));
-            sb_t ci;
-            sb_init(&ci);
-            sb_printf(&ci, "About the newest reply only: %s", cfg->checks[i]);
-            jobj_set(q, "instructions", jstr(ci.s));
-            sb_free(&ci);
-            char id[24];
-            snprintf(id, sizeof id, "c%zu", i);
-            jobj_set(cq, id, q);
-        }
-        /* The truth (the user's ask, 2026-10-17: "Opinions need to be handled
-         * seperately from experiences and facts"): three plain questions,
-         * combined here, since one compound statement judged world truth, not
-         * what MechJev could know (speak.md, "Opinions, experiences, facts") */
-        for (size_t i = 0; cfg->truth && i < 3; i++) {
-            json_t *q = jobj();
-            jobj_set(q, "type", jstr("noul"));
-            sb_t ci;
-            sb_init(&ci);
-            sb_printf(&ci, "About the newest reply only: %s", TRUTH[i]);
-            jobj_set(q, "instructions", jstr(ci.s));
-            sb_free(&ci);
-            char id[24];
-            snprintf(id, sizeof id, "t%zu", i);
-            jobj_set(cq, id, q);
-        }
-        for (size_t i = 0; cfg->grammar && i < 3; i++) { /* grammar, three statements (GRAMMAR) */
-            json_t *q = jobj();
-            jobj_set(q, "type", jstr("noul"));
-            sb_t ci;
-            sb_init(&ci);
-            sb_printf(&ci, "About the newest reply only: %s", GRAMMAR[i]);
-            jobj_set(q, "instructions", jstr(ci.s));
-            sb_free(&ci);
-            char id[24];
-            snprintf(id, sizeof id, "g%zu", i);
-            jobj_set(cq, id, q);
-        }
-        json_t *r2 = NULL;
-        json_t *a2 = ask(cfg, s2.s, cq, &r2, &cost, err, errlen);
-        sb_free(&s2);
-        for (size_t i = 0; a2 && i < cfg->nchecks; i++) {
-            char id[24];
-            snprintf(id, sizeof id, "c%zu", i);
-            json_t *v = jobj_get(jobj_get(a2, id), "noul");
-            double p = v && v->t == J_NUM ? v->f : 0;
-            failed |= p < 0.5;
-            jobj_set(checks, cfg->checks[i], jf64(p));
-        }
-        if (a2 && cfg->grammar) {
-            double gp[3];
-            for (size_t i = 0; i < 3; i++) {
-                char id[24];
-                snprintf(id, sizeof id, "g%zu", i);
-                json_t *v = jobj_get(jobj_get(a2, id), "noul");
-                gp[i] = v && v->t == J_NUM ? v->f : 0;
-            }
-            /* a bare yes, no, hello, thanks or bye is spared "a word is missing" */
-            char **rw;
-            size_t nrw = split_words(*reply, &rw), content = 0;
-            bool bare = false;
-            for (size_t i = 0; i < nrw; i++)
-                if (!is_punct(rw[i])) {
-                    content++;
-                    for (size_t b = 0; b < sizeof BARE / sizeof *BARE; b++)
-                        bare |= !strcmp(rw[i], BARE[b]);
-                }
-            bare = bare && content == 1;
-            bare |= content == 2 && !strcmp(rw[0], "thank") && !strcmp(rw[1], "you");
-            free_words(rw, nrw);
-            bool ok = gp[0] >= 0.5 && (gp[1] < 0.5 || gp[2] >= ELLIPSIS_MIN || bare);
-            failed |= !ok;
-            jobj_set(checks, "The reply is a whole English sentence or a bare short reply.", jf64(ok ? 1 : 0));
-            json_t *gj = jobj();
-            jobj_set(gj, "sentence", jf64(gp[0]));
-            jobj_set(gj, "word_missing", jf64(gp[1]));
-            jobj_set(gj, "ellipsis", jf64(gp[2]));
-            jobj_set(gj, "bare", jbool(bare));
-            jobj_set(gj, "whole", jbool(ok));
-            json_free(grammar_j);
-            grammar_j = gj;
-        }
-        if (a2 && cfg->truth) {
-            double tp[3];
-            for (size_t i = 0; i < 3; i++) {
-                char id[24];
-                snprintf(id, sizeof id, "t%zu", i);
-                json_t *v = jobj_get(jobj_get(a2, id), "noul");
-                tp[i] = v && v->t == J_NUM ? v->f : 0;
-            }
-            /* a fact about the world it was not told, or an experience it could not have had */
-            bool untrue = (tp[0] >= 0.5 && tp[1] < 0.5) || tp[2] >= 0.5;
-            failed |= untrue;
-            json_t *tj = jobj();
-            jobj_set(tj, "fact", jf64(tp[0]));
-            jobj_set(tj, "told", jf64(tp[1]));
-            jobj_set(tj, "experience", jf64(tp[2]));
-            jobj_set(tj, "true", jbool(!untrue));
-            jobj_set(checks, "The reply claims no fact it was not told and no experience it could not have had.", jf64(untrue ? 0 : 1));
-            json_free(truth_j);
-            truth_j = tj; /* the three probabilities: the record's truth */
-        }
-        json_free(r2);
-        if (!a2)
-            failed = true;
-    }
+    bool failed = false;
+    judge_reply(cfg, state, *reply, &cost, &failed, checks, &truth_j, &grammar_j, err, errlen);
     for (size_t i = 0; i < nex; i++)
         ex[i].failed = failed;
 
@@ -1863,4 +1970,127 @@ int speak_ngram_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns_
     free(line);
     fclose(f);
     return 0;
+}
+
+/* The labels a taught turn's record teaches, in order: each step's word
+ * learned, up to the keeper's cut, the end there. n of them into *out. */
+static size_t turn_labels(const learner_t *l, const json_t *r, int32_t **out)
+{
+    const json_t *trace = jobj_get(r, "trace");
+    const json_t *kept = jobj_get(r, "kept"), *ca = kept ? jobj_get(kept, "cut_at") : NULL;
+    size_t cut = ca && ca->t == J_NUM ? (size_t)ca->u : (size_t)-1, n = 0;
+    *out = xcalloc(trace && trace->t == J_ARR ? trace->n + 1 : 1, sizeof **out);
+    for (size_t k = 0; trace && trace->t == J_ARR && k < trace->n; k++) {
+        const json_t *st = trace->items[k], *tt = jobj_get(st, "t");
+        if (!tt || tt->t != J_NUM)
+            continue;
+        size_t t = (size_t)tt->u;
+        if (t > cut)
+            break;
+        const json_t *w = jobj_get(st, "engine_top");
+        if (!w || w->t != J_STR)
+            w = jobj_get(st, "pick");
+        int32_t label = t == cut ? lex_find(l, END) : w && w->t == J_STR ? lex_find(l, w->s) : -1;
+        if (label >= 0)
+            (*out)[n++] = label;
+        if (t == cut)
+            break;
+    }
+    return n;
+}
+
+int speak_rejudge(learner_t *l, const speak_cfg_t *cfg, const char *turns_path, size_t *judged, size_t *now_failed,
+                  size_t *examples, char *err, size_t errlen)
+{
+    *judged = *now_failed = *examples = 0;
+    FILE *f = fopen(turns_path, "r");
+    if (!f) {
+        snprintf(err, errlen, "%s: %s", turns_path, strerror(errno));
+        return -1;
+    }
+    sb_t out;
+    sb_init(&out);
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t len;
+    int rc = 0;
+    while ((len = getline(&line, &cap, f)) > 0) {
+        char perr[128];
+        json_t *r = json_parse(line, (size_t)len, perr, sizeof perr);
+        const json_t *mode = r ? jobj_get(r, "mode") : NULL, *fr = r ? jobj_get(r, "failed_requirement") : NULL;
+        const json_t *person = r ? jobj_get(r, "person") : NULL, *reply = r ? jobj_get(r, "reply") : NULL;
+        if (!r || !mode || mode->t != J_STR || strcmp(mode->s, "taught") || !fr || fr->t != J_BOOL || fr->b ||
+            !person || person->t != J_STR || !reply || reply->t != J_STR) {
+            sb_puts(&out, line); /* as it was */
+            json_free(r);
+            continue;
+        }
+        /* judged as a turn's reply is, on the person's line (the history of
+         * that time is not kept) */
+        sb_t st;
+        sb_init(&st);
+        sb_printf(&st, "A conversation in English. The person speaks; the reply is written one word at a time.\n"
+                       "Person: %s",
+                  person->s);
+        cost_t cost = {0};
+        bool failed = false;
+        json_t *checks = jobj(), *tj = jnull(), *gj = jnull();
+        /* only the new checks: the old requirements were judged with the
+         * history of their time, which is not kept */
+        speak_cfg_t only_new = *cfg;
+        only_new.nchecks = 0;
+        judge_reply(&only_new, st.s, reply->s, &cost, &failed, checks, &tj, &gj, err, errlen);
+        sb_free(&st);
+        (*judged)++;
+        fprintf(stderr, "%-44.44s -> %-36.36s %s\n", person->s, reply->s, failed ? "FAILS NOW" : "passes");
+        if (failed) {
+            (*now_failed)++;
+            /* the replay: every run of examples teaching exactly this reply */
+            int32_t *lab;
+            size_t nl = turn_labels(l, r, &lab);
+            for (size_t i = 0; nl && i + nl <= l->nreplay; i++) {
+                bool same = true;
+                for (size_t j = 0; j < nl && same; j++)
+                    same = l->replay[i + j].pos == j && l->replay[i + j].top == lab[j];
+                if (same && (i + nl == l->nreplay || l->replay[i + nl].pos == 0)) {
+                    for (size_t j = 0; j < nl; j++)
+                        *examples += !l->replay[i + j].failed, l->replay[i + j].failed = true;
+                }
+            }
+            free(lab);
+            json_t *rj = jobj();
+            char when[32];
+            time_t now = time(NULL);
+            strftime(when, sizeof when, "%Y-%m-%dT%H:%M:%S", localtime(&now));
+            jobj_set(rj, "time", jstr(when));
+            jobj_set(rj, "checks", checks);
+            jobj_set(rj, "truth", tj);
+            jobj_set(rj, "grammar", gj);
+            jobj_set(r, "failed_requirement", jbool(true));
+            jobj_set(r, "rejudged", rj);
+            char *s = json_dump(r);
+            sb_printf(&out, "%s\n", s);
+            free(s);
+        } else {
+            json_free(checks);
+            json_free(tj);
+            json_free(gj);
+            sb_puts(&out, line);
+        }
+        json_free(r);
+    }
+    free(line);
+    fclose(f);
+    /* turns.jsonl replaced whole, never half written */
+    sb_t tmp;
+    sb_init(&tmp);
+    sb_printf(&tmp, "%s.tmp", turns_path);
+    FILE *g = fopen(tmp.s, "w");
+    if (!g || fwrite(out.s ? out.s : "", 1, out.n, g) != out.n || fclose(g) || rename(tmp.s, turns_path)) {
+        snprintf(err, errlen, "%s: %s", turns_path, strerror(errno));
+        rc = -1;
+    }
+    sb_free(&tmp);
+    sb_free(&out);
+    return rc;
 }
