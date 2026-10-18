@@ -1369,7 +1369,11 @@ static int judge_teacher_check(const speak_cfg_t *cfg, const char *person, const
 #define NG_GATE_ON 0.5 /* the n-gram says the word only with its gate this open... */
 #define NG_AMONG 3     /* ...and only when the word is among the circuit's own best matches */
 #define VETO_AMONG 4   /* the circuit's best matches the coherence veto may go down to */
-#define COHERENCE_FLOOR 0.5 /* the engine's viability a word needs to be said (gated, cfg.veto) */
+/* the engine's viability a word needs to be said (gated, cfg.veto): from 17
+ * test lines' 73 candidates against the teacher's check of each alone
+ * (~/.cache/mechjev-v2-veto-calib.tsv): at 0.5, 14 lines right, 3 wrong, none
+ * abstained; at 0.6, 13 right, 1 wrong, 3 abstained (said it did not know) */
+#define COHERENCE_FLOOR 0.6
 
 typedef struct {
     int32_t first;   /* the first word, -1: the gates' own */
