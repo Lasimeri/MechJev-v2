@@ -60,10 +60,11 @@ int teacher_check(const teacher_t *t, const lesson_t *l, const char *line, const
 int teacher_try(const teacher_t *t, const char *line, json_t **rec, char *err, size_t errlen);
 
 /* A demonstration: a taught turn on `line` in MechJev's conversation (the
- * engine chooses MechJev's words among its own, the line's and `show`).
+ * engine, or gated MechJev's own gates, choose its words among its own, the
+ * line's and `show`), `check` the stage's check, a requirement of the turn.
  * *rec is the turn record. */
-int teacher_demonstrate(const teacher_t *t, const char *line, const char *show, json_t **rec, char *err,
-                        size_t errlen);
+int teacher_demonstrate(const teacher_t *t, const char *line, const char *show, const char *check, json_t **rec,
+                        char *err, size_t errlen);
 
 /* MechJev answering `line` in the TUI a person watches, the teacher typing
  * it there as a person would (as tools/tui_say.sh does): the next turn's

@@ -521,7 +521,7 @@ static int ladder_step(teach_ctx_t *c, char *err, size_t errlen)
     else {
         json_t *rec = NULL;
         rc = c->t.pane ? teacher_say_in_tui(&c->t, line, false, l->show, l->check, &rec, err, errlen)
-                       : teacher_demonstrate(&c->t, line, l->show, &rec, err, errlen);
+                       : teacher_demonstrate(&c->t, line, l->show, l->check, &rec, err, errlen);
         double p = 0;
         const char *reply = rc ? "" : str(rec, "reply");
         if (!rc && *reply)

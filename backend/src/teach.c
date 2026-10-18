@@ -232,9 +232,22 @@ int teacher_try(const teacher_t *t, const char *line, json_t **rec, char *err, s
     return *rec ? 0 : -1;
 }
 
-int teacher_demonstrate(const teacher_t *t, const char *line, const char *show, json_t **rec, char *err,
-                        size_t errlen)
+int teacher_demonstrate(const teacher_t *t, const char *line, const char *show, const char *check, json_t **rec,
+                        char *err, size_t errlen)
 {
+    /* the stage check and who speaks, for the next turn, as the TUI path
+     * gives them (teacher_say_in_tui): without the check a gated try was
+     * kept on the requirements alone ("What?" to "Did you have fun today?",
+     * the check 0.05) */
+    json_t *nx = jobj();
+    if (check && *check)
+        jobj_set(nx, "check", jstr(check));
+    if (t->speaker)
+        jobj_set(nx, "speaker", jstr(t->speaker));
+    json_t *ok = post(t->learner, "/v1/next", nx, err, errlen);
+    if (!ok)
+        return -1;
+    json_free(ok);
     json_t *req = jobj();
     jobj_set(req, "message", jstr(line));
     if (show && *show)
