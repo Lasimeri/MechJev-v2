@@ -1744,14 +1744,21 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
                         word = sentence_end(g->said[t - 1]) ? end : lex_find(l, ".");
                         g->abstain = 3;
                     } else if (what >= 0 && allowed(l, g->said, 0, what)) {
+                        /* the word asked about: one it never heard before this
+                         * turn when the line has one ("What blorple?", not
+                         * "What at?" to "Did you see the blorple at
+                         * Zentara?"), else the one the pointer attends to */
                         int best = -1;
-                        for (int j = 0; have_att && j < pl->n; j++) {
-                            int32_t w = pl->tok[j];
-                            if (w < 0 || w == start || w == end || w == what || is_punct(l->v[w].word))
-                                continue;
-                            if (best < 0 || att[j] > att[best])
-                                best = j;
-                        }
+                        for (int pass = 0; pass < 2 && best < 0; pass++)
+                            for (int j = 0; (pass == 0 || have_att) && j < pl->n; j++) {
+                                int32_t w = pl->tok[j];
+                                if (w < 0 || w == start || w == end || w == what || is_punct(l->v[w].word))
+                                    continue;
+                                if (pass == 0 && pl->f[j][0] <= 0) /* first: the never heard */
+                                    continue;
+                                if (best < 0 || (have_att && att[j] > att[best]))
+                                    best = j;
+                            }
                         word = what;
                         g->abstain = 1;
                         g->abstain_word = best >= 0 ? pl->tok[best] : -1;
