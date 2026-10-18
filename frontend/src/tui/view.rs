@@ -1023,20 +1023,39 @@ fn talk(f: &mut Frame, a: &mut App) {
         }
         conv.push(vec![]);
     }
-    if a.job.as_ref().is_some_and(|j| j.0 == super::app::Job::Talking) {
+    // A turn in progress, whoever asked: this screen's own (its line kept from
+    // Enter on), or the learner's turn.json (the teacher, a probe, the API).
+    let own = a.job.as_ref().is_some_and(|j| j.0 == super::app::Job::Talking);
+    let live = a.talk.live.as_ref();
+    if own || live.is_some() {
         let s = SPIN[a.spin % SPIN.len()];
+        let line = a
+            .talk
+            .pending
+            .clone()
+            .filter(|_| own)
+            .or_else(|| live.and_then(|l| l["line"].as_str().map(String::from)));
+        let mode = live
+            .and_then(|l| l["mode"].as_str())
+            .unwrap_or(if a.talk.alone { "alone" } else { "taught" })
+            .to_string();
+        let by = live
+            .and_then(|l| l["speaker"].as_str().map(String::from))
+            .or_else(|| a.talk.pending_by.clone());
         // the line it is answering, labelled as the turn record will be
-        if let Some(p) = &a.talk.pending {
-            let who = match &a.talk.pending_by {
-                Some(s) if !s.is_empty() => format!("{:<5}", s.to_lowercase().chars().take(4).collect::<String>()),
-                _ => "you  ".to_string(),
-            };
-            for (i, l) in wrap(p, cw.saturating_sub(5)).into_iter().enumerate() {
+        let who = match by {
+            Some(s) if !s.is_empty() => format!("{:<5}", s.to_lowercase().chars().take(4).collect::<String>()),
+            _ if mode == "probe" => "prob ".to_string(),
+            _ => "you  ".to_string(),
+        };
+        if let Some(p) = line {
+            for (i, l) in wrap(&p, cw.saturating_sub(5)).into_iter().enumerate() {
                 conv.push(vec![faint(if i == 0 { who.clone() } else { "     ".to_string() }), text(l)]);
             }
         }
         let so_far = a.talk.speaking.clone().unwrap_or_default();
-        conv.push(vec![dim("it   "), text(so_far).bold(), dim(format!(" {s}"))]);
+        let it = if mode == "taught" { "it   " } else { "solo " };
+        conv.push(vec![dim(it), text(so_far).bold(), dim(format!(" {s}"))]);
     }
     if conv.is_empty() {
         conv.push(vec![dim("say something below: it starts with no words, and learns them from you")]);

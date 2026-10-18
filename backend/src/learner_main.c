@@ -36,6 +36,9 @@
 /* The fast memory's weight in a word's score (MJ2_MEMORY; 0: it learns but
  * does not speak). Set from the rebuild's margins: see learner_main.md. */
 #define DEFAULT_MEM_WEIGHT 0.0
+/* the n-gram memory's weight (MJ2_NGRAM): 1, the probe A/B's choice (ngram.md:
+ * 18 of 24 against 15 at 0; at 3, "I am." to "Do you like music?") */
+#define DEFAULT_NG_WEIGHT 1.0
 
 typedef struct {
     char *dir, *store, *curves, *history, *turns; /* turns: whole records, the per-word trace kept */
@@ -213,6 +216,8 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
         s->min_p = strtod(v, NULL);
     if ((v = getenv("MJ2_REPEAT_PENALTY")) && *v)
         s->repeat_penalty = strtod(v, NULL);
+    if ((v = getenv("MJ2_TRUTH")) && *v)
+        c->cfg.truth = strcmp(v, "0") != 0;
     if ((v = getenv("MJ2_KEEP_DROP")) && *v)
         c->cfg.keep_drop = strtod(v, NULL);
     if ((v = getenv("MJ2_LOOKAHEAD")) && *v)
@@ -222,6 +227,9 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
     c->l->mem_weight = (float)DEFAULT_MEM_WEIGHT;
     if ((v = getenv("MJ2_RECENT_SHARE")) && *v)
         c->l->recent_share = strtof(v, NULL);
+    c->l->ng_weight = (float)DEFAULT_NG_WEIGHT;
+    if ((v = getenv("MJ2_NGRAM")) && *v)
+        c->l->ng_weight = strtof(v, NULL);
     if ((v = getenv("MJ2_MEMORY")) && *v)
         c->l->mem_weight = strtof(v, NULL);
     if ((v = getenv("MJ2_TOP_K")) && *v)
@@ -239,6 +247,10 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
     int vr = vars_load(&c->cfg, c->l, vars, err, errlen);
     free(vars);
     if (vr)
+        return -1;
+    /* the n-gram memory, made from what MechJev has said (nothing stored) */
+    size_t ng_turns, ng_steps;
+    if (speak_ngram_rebuild(c->l, &c->cfg, c->turns, &ng_turns, &ng_steps, err, errlen))
         return -1;
     load_history(c);
     pthread_mutex_init(&c->mu, NULL);
@@ -293,6 +305,41 @@ static int persist(ctx_t *c, const json_t *rec, char *err, size_t errlen)
     return 0;
 }
 
+/* The turn being answered, for the TUI whoever asked (the user's question,
+ * 2026-10-17: "Why isn't the harness wired in?": probes and API turns had
+ * shown nothing in it): `turn.json` {line, speaker, mode} in the data
+ * directory while it runs, written before the first word, removed with the
+ * reply so far when it ends. Under c->mu. */
+static void turn_begin(const ctx_t *c, const char *line, const char *speaker, const char *mode)
+{
+    json_t *o = jobj();
+    jobj_set(o, "line", jstr(line));
+    jobj_set(o, "speaker", speaker && *speaker ? jstr(speaker) : jnull());
+    jobj_set(o, "mode", jstr(mode));
+    char *s = json_dump(o);
+    json_free(o);
+    char *tmp = join(c->dir, "turn.json.tmp"), *path = join(c->dir, "turn.json");
+    FILE *f = fopen(tmp, "w");
+    if (f) {
+        fputs(s, f);
+        if (fclose(f) == 0)
+            rename(tmp, path);
+    }
+    free(s);
+    free(tmp);
+    free(path);
+}
+
+static void turn_end(const ctx_t *c)
+{
+    const char *names[] = {"speaking.txt", "speaker.txt", "turn.json"};
+    for (size_t i = 0; i < sizeof names / sizeof *names; i++) {
+        char *p = join(c->dir, names[i]);
+        unlink(p);
+        free(p);
+    }
+}
+
 /* One turn; alone: the circuit speaks by itself this turn (the engine
  * perceives and judges, chooses no word, nothing is learned). */
 static int one_turn(ctx_t *c, const char *message, bool alone, const char *show, const char *speaker, char **reply,
@@ -302,19 +349,16 @@ static int one_turn(ctx_t *c, const char *message, bool alone, const char *show,
     speak_cfg_t cfg = c->cfg;
     cfg.alone = cfg.alone || alone;
     cfg.show = show; /* a teacher's demonstration: the answer's words offered too */
+    cfg.parent = !(speaker && *speaker); /* no one else named: the person at the TUI, the parent */
     if (show && *show && !cfg.alone) { /* shown is heard: the words enter its lexicon, so they can be offered */
         char **w;
         size_t n = split_words(show, &w);
         learner_hear(c->l, w, n);
         free_words(w, n);
     }
+    turn_begin(c, message, speaker, cfg.alone ? "alone" : "taught");
     int rc = speak_turn(c->l, &cfg, &c->h, message, reply, rec, err, errlen);
-    char *sp = join(c->dir, "speaking.txt");
-    unlink(sp); /* the turn is over: nothing is being said */
-    free(sp);
-    sp = join(c->dir, "speaker.txt");
-    unlink(sp); /* and no one is waiting for an answer */
-    free(sp);
+    turn_end(c); /* the turn is over: nothing is being said, no one waits */
     if (!rc && speaker && *speaker) /* who said it, for the TUI (the teacher: "Qwen") */
         jobj_set(*rec, "speaker", jstr(speaker));
     if (!rc)
@@ -410,17 +454,19 @@ static int probe_one(ctx_t *c, const char *msg, json_t **out, char *err, size_t 
     cfg.alone = cfg.probe = true;
     char *reply = NULL;
     pthread_mutex_lock(&c->mu);
+    turn_begin(c, msg, NULL, "probe");
     int rc = speak_turn(c->l, &cfg, &empty, msg, &reply, out, err, errlen);
+    turn_end(c);
     pthread_mutex_unlock(&c->mu);
-    char *sp = join(c->dir, "speaking.txt");
-    unlink(sp);
-    free(sp);
     history_free(&empty);
     free(reply);
     return rc;
 }
 
-static int run_probes(ctx_t *c, json_t **out, char *err, size_t errlen)
+/* ng_weight >= 0: the n-gram memory at that weight for these probes only
+ * (POST /v1/probe {"ngram_weight"}: the weights A/B against the live
+ * learner, its own weight kept for every other turn). */
+static int run_probes(ctx_t *c, double ng_weight, json_t **out, char *err, size_t errlen)
 {
     char *path = NULL;
     const char *p = getenv("MJ2_PROBES");
@@ -462,7 +508,14 @@ static int run_probes(ctx_t *c, json_t **out, char *err, size_t errlen)
             char *reply = NULL;
             json_t *rec = NULL;
             pthread_mutex_lock(&c->mu);
+            float keep = c->l->ng_weight;
+            if (ng_weight >= 0)
+                c->l->ng_weight = (float)ng_weight;
+            float used_ng = c->l->ng_weight;
+            turn_begin(c, q, NULL, "probe");
             rc = speak_turn(c->l, &cfg, &empty, q, &reply, &rec, err, errlen);
+            turn_end(c);
+            c->l->ng_weight = keep;
             size_t turns = c->l->turns, lexicon = c->l->n, say = lex_speakable_count(c->l);
             pthread_mutex_unlock(&c->mu);
             char *sp = join(c->dir, "speaking.txt");
@@ -479,6 +532,7 @@ static int run_probes(ctx_t *c, json_t **out, char *err, size_t errlen)
             jobj_set(row, "probe", jstr(q));
             jobj_set(row, "repeat", ju64((uint64_t)rep));
             jobj_set(row, "memory_weight", jf64(c->l->mem_weight));
+            jobj_set(row, "ngram_weight", jf64(used_ng));
             jobj_set(row, "reply", jstr(reply));
             jobj_set(row, "words", jclone(jobj_get(rec, "words")));
             jobj_set(row, "coherence", jclone(jobj_get(rec, "coherence_final")));
@@ -641,6 +695,8 @@ static json_t *stats_json(ctx_t *c)
     for (int i = 0; i < VAR_SLOTS; i++)
         used += c->l->slot[i] != NULL;
     jobj_set(o, "variable_slots", ju64(used));
+    jobj_set(o, "ngram_entries", ju64(c->l->ng.n));
+    jobj_set(o, "ngram_weight", jf64(c->l->ng_weight));
     json_t *layers = jarr();
     for (int i = 0; i < c->l->circ.n_layers; i++)
         jarr_push(layers, ju64((uint64_t)c->l->circ.size[i]));
@@ -768,11 +824,15 @@ static void *serve_conn(void *arg)
         json_free(v);
     } else if (post && !strcmp(r.path, "/v1/probe")) {
         /* {"message": ...}: that message alone (the teacher's try); else the
-         * fixed probes (probes.txt) */
+         * fixed probes (probes.txt); {"ngram_weight": W}: the n-gram memory
+         * at W for them only (tools/ngram_ab.sh) */
         json_t *v = r.body_len ? json_parse(r.body, r.body_len, err, sizeof err) : NULL;
         const json_t *m = v ? jobj_get(v, "message") : NULL;
         json_t *rows = NULL;
-        int rc = m && m->t == J_STR ? probe_one(c, m->s, &rows, err, sizeof err) : run_probes(c, &rows, err, sizeof err);
+        const json_t *nw = v ? jobj_get(v, "ngram_weight") : NULL;
+        double ngw = nw && nw->t == J_NUM ? nw->f : -1;
+        int rc = m && m->t == J_STR ? probe_one(c, m->s, &rows, err, sizeof err)
+                                     : run_probes(c, ngw, &rows, err, sizeof err);
         if (rc)
             reply_json(k->fd, 502, message(err));
         else
@@ -1013,7 +1073,7 @@ int main(int argc, char **argv)
         rc = cmd_export(&c, argc - 2, argv + 2);
     else if (!strcmp(cmd, "probe")) {
         json_t *rows;
-        rc = run_probes(&c, &rows, err, sizeof err) ? 1 : 0;
+        rc = run_probes(&c, -1, &rows, err, sizeof err) ? 1 : 0;
         if (rc)
             fprintf(stderr, "error: %s\n", err);
         for (size_t i = 0; !rc && i < rows->n; i++) {

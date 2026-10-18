@@ -4,3 +4,9 @@
 The reply is grammatical English.
 The reply responds to what the person said.
 The reply does not repeat itself.
+# Opinions apart from experiences and facts (the user's ask, 2026-10-17)
+# is judged in speak.c, not here: one statement such as "The reply claims
+# no experience it could not have had and no fact it was not told" passed
+# every case (the engine judged the world's truth: "Paris." 0.963), so
+# three plain statements are asked and combined (speak.md). MJ2_TRUTH=0
+# turns it off.

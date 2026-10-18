@@ -25,4 +25,9 @@ Scripts for talking to MechJev and measuring it on the live system.
   the TUI, probing after each. Not run: the harm check stopped the memory
   first (learner.md).
 
+- `ngram_ab.sh ROUNDS WEIGHT...`: the probe with the n-gram memory at each
+  weight, interleaved, against the live `learner serve` (`POST /v1/probe
+  {"ngram_weight": W}`, for those probes only); a line a run, the replies
+  that passed every requirement (ngram.md).
+
 The teacher has its own program, `backend/build/teacher` (teach.md).

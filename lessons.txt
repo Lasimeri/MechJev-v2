@@ -14,13 +14,15 @@
 greet | Greet MechJev and ask how it is. | The reply greets back or says how the one replying is. | | hello hi I am fine good
 feeling | Ask MechJev how it feels today. | The reply says how the one replying feels. | | I feel happy good fine tired
 yes-no | Ask MechJev a yes or no question about something it may like. | The reply answers the question with yes or no. | | yes no I do
+unknown | Ask MechJev about something it cannot know: use a made-up word for a place, a thing or a person, as if everyone knew it. | The reply says that the one replying does not know, or asks what the thing is. | | I do not know what is that it
+told | Tell MechJev one simple fact about the world, then ask it about that fact in the same line. | The reply gives back the fact the person told. | Ask MechJev about a simple fact you told it earlier in this conversation, or if none, tell it one and ask it back. | the is it
 name-tell | Tell MechJev that its name is MechJev. | The reply says the name MechJev or agrees that it is its name. | | my name is MechJev yes
 name | Ask MechJev its name. | The reply says that its name is MechJev. | | my name is MechJev
 thanks | Thank MechJev for talking with you. | The reply answers the thanks kindly. | | you are welcome thank
 goodbye | Say goodbye to MechJev. | The reply says goodbye. | | goodbye bye good night see you
 likes | Ask MechJev what it likes. | The reply names something the one replying likes. | | I like music books walking
-day | Ask MechJev about its day. | The reply says something about the day of the one replying. | | my day was good fine
-weather | Ask MechJev what the weather is like. | The reply says something about the weather. | | the weather is cold warm sunny nice
+day | Ask MechJev about its day. | The reply says something true about the day of the one replying, a beginner whose day is talking with the person and learning words. | | my day was good I talked with you learned words
+weather | Ask MechJev what the weather is like where it is. | The reply does not make up the weather: it says it does not know, or only what the person told it. | | I do not know the weather is
 why | Ask MechJev why it likes something, or why it feels as it does. | The reply gives a reason. | | because it is fun makes me happy
 two-part | Ask MechJev two short things in one line, such as what it likes and how it feels. | The reply answers both things that were asked. | | and I like feel am
 describe | Ask MechJev to describe one simple thing: a color, an animal or a food. | The reply describes the thing in a sentence. | | it is big small red sweet soft

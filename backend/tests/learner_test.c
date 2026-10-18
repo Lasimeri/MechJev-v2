@@ -90,7 +90,7 @@ static double shown_agree(learner_t *l, const example_t *ex, int n)
     for (int i = 0; i < n; i++) {
         uint8_t bits[N_IN];
         learner_inputs(l, ex[i].vars, ex[i].prev, ex[i].pos, ex[i].id * 0x9E3779B97F4A7C15ull, ABL_NONE, bits);
-        size_t m = learner_propose(l, bits, NULL, rank, l->n, true, NULL);
+        size_t m = learner_propose(l, bits, NULL, NULL, rank, l->n, true, NULL);
         for (size_t r = 0; r < m; r++) {
             bool shown = false;
             for (int k = 0; k < ex[i].n; k++)
@@ -293,6 +293,34 @@ static void memory_tests(void)
     learner_free(l);
 }
 
+/* The n-gram memory's gate (ngram.h): after the same start, "yes" was said
+ * under one meaning and "hi" under the opposite one; asked under each, it
+ * gives the word said under it, and the other's entry is gated to 0. Slots
+ * that never vary carry nothing. */
+static void ngram_tests(void)
+{
+    ngram_t g;
+    ng_init(&g, 4);
+    const int32_t S = 0, YES = 7, HI = 8;
+    int32_t hist[NG_ORD] = {S, S, S};
+    float m_yes[4] = {1, 0, 0.5f, 0.5f}, m_hi[4] = {0, 1, 0.5f, 0.5f};
+    for (int i = 0; i < 3; i++) {
+        ng_learn(&g, hist, YES, m_yes);
+        ng_learn(&g, hist, HI, m_hi);
+    }
+    double p[16];
+    double gate = ng_predict(&g, hist, m_yes, 16, p), gate_yes = gate;
+    CHECK(p[YES] > 0.999 && p[HI] < 1e-9, "n-gram under the yes meaning: p(yes) %.3f p(hi) %.3f", p[YES], p[HI]);
+    CHECK(gate > 0.49 && gate < 0.51, "n-gram gate %.3f, want 0.5 (half the counts contradict)", gate);
+    ng_predict(&g, hist, m_hi, 16, p);
+    CHECK(p[HI] > 0.999 && p[YES] < 1e-9, "n-gram under the hi meaning: p(hi) %.3f p(yes) %.3f", p[HI], p[YES]);
+    int32_t other[NG_ORD] = {S, S, 5};
+    gate = ng_predict(&g, other, m_yes, 16, p);
+    CHECK(gate == 0 && p[YES] == 0 && p[HI] == 0, "n-gram after an unseen word: gate %.3f", gate);
+    printf("n-gram memory: the word said under each meaning, the other gated to 0 (gate %.2f)\n", gate_yes);
+    ng_free(&g);
+}
+
 int main(int argc, char **argv)
 {
     if (argc > 1 && !strcmp(argv[1], "three")) { /* only the measure (for comparing builds) */
@@ -478,6 +506,7 @@ int main(int argc, char **argv)
     free(want);
     learner_free(l);
     memory_tests();
+    ngram_tests();
     three_words();
     printf("%s\n", fails ? "learner_test: FAILED" : "learner_test: all checks passed");
     return fails ? 1 : 0;

@@ -116,7 +116,7 @@ Two parts, and only the first touches llama.cpp.
   learner, composing its lines word by word, was removed.
 - **The ladder** (the user's, 2026-10-17: "Qwen needs to prompt
   increasingly complex prompts", "MechJev needs to learn to communicate
-  first", "the repetitions aren't needed"): `lessons.txt` is 17 stages in
+  first", "the repetitions aren't needed"): `lessons.txt` is 18 stages in
   order of difficulty; each turn Qwen writes a new line (never one it has
   said) and types it in the TUI, labelled `qwen`; a stage opens with a
   check of MechJev alone, then a check after every 2 taught turns, and 2
@@ -130,3 +130,19 @@ Two parts, and only the first touches llama.cpp.
   rejects), so code needs its own marks, renderer, end rule and
   requirements (compiled and run by tcc in bwrap, the output compared with
   a reference program's).
+- **The meaning-gated n-gram memory** (the user's ask: repurpose LLM
+  n-grams for real-time coherence; the user's one exception to the
+  no-Markov rule, which otherwise bans Markov chains in any form, ternary
+  included): Engram's design, entries keeping the meaning they were said
+  under, learned at once from MechJev's own passed replies, mixed at weight
+  1 (ngram.md). Offline, meaning gated it (0.504 against 0.29 shuffled);
+  live, 18 of 24 probes against 15 off.
+- **The harness, wired for every turn**: `turn.json` while any turn runs
+  (TUI, teacher, API, probe), so the TUI shows what is being answered.
+- **What it knows** (the user's: say when it doesn't know; imprint on the
+  user like a child, confused by the unknown): the parent's words heard
+  twice; the novelty and P(IK) as inputs; the ladder's `unknown` and `told`
+  stages (speak.md, teach.md).
+- **Opinions apart from experiences and facts** (the user's): a Choice
+  about what is asked, and a truth requirement from three plain statements
+  (12 of 12 on known cases; one compound statement passed everything).

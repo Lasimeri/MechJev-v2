@@ -18,6 +18,7 @@
 
 #include "circuit.h"
 #include "hdmem.h"
+#include "ngram.h"
 
 #define LEARNER_VERSION 4u
 #define VAR_SLOTS 64 /* variable inputs; unused slots read 0.5 */
@@ -73,6 +74,8 @@ typedef struct {
     hdmem_t mem;      /* the fast memory: contexts to words, no gradient (hdmem.h) */
     float mem_weight; /* its share of a word's score; 0: off (configuration, not stored) */
     float recent_share; /* share of rehearsal passes drawn from the last RECENT_EXAMPLES (configuration) */
+    ngram_t ng;        /* the meaning-gated n-gram memory, made from turns.jsonl at every start (ngram.h) */
+    float ng_weight;   /* its share of a word's probability, times its gate; 0: off (configuration) */
     bool circuit_fresh; /* the circuit was made new at load (another input layout): learner circuit-rebuild */
 } learner_t;
 
@@ -102,6 +105,9 @@ void free_words(char **w, size_t n);
 /* Hearing: the person's words counted (that is all: what follows what is
  * never learned from hearing). */
 void learner_hear(learner_t *l, char **words, size_t n);
+/* Heard `times` over: the parent's words (speak.c PARENT_HEARD), a child's
+ * first teacher, count more than anyone else's. */
+void learner_hear_as(learner_t *l, char **words, size_t n, uint32_t times);
 
 /* The variable slot named `name`, made when new; -1 when all are taken. */
 int learner_slot(learner_t *l, const char *name);
@@ -111,11 +117,21 @@ int learner_slot(learner_t *l, const char *name);
  * previous word's code, the position. */
 void learner_inputs(const learner_t *l, const float *vars, int32_t prev, unsigned pos,
                     uint64_t seed, ablation_t abl, uint8_t *bits);
+/* The n-gram memory's question at a step (ngram.h): the NG_ORD words said
+ * before it (START where there were none) and the meaning (the slots the
+ * circuit sees); its own first word and its gate come back. */
+typedef struct {
+    const int32_t *hist;
+    const float *vars;
+    int32_t top;
+    double gate;
+} ng_query_t;
 /* The k best speakable words for these inputs, by the discrete circuit and
- * (with a context and a mem_weight) the fast memory,
- * and the softmax probability of the first (how sure it is). */
-size_t learner_propose(const learner_t *l, const uint8_t *bits, const hv_t *context, int32_t *out, size_t k,
-                       bool allow_end, double *p_first);
+ * (with a context and a mem_weight) the fast memory, and (with a query and
+ * an ng_weight) the n-gram memory; and the softmax probability of the first
+ * (how sure it is). */
+size_t learner_propose(const learner_t *l, const uint8_t *bits, const hv_t *context, ng_query_t *ngq,
+                       int32_t *out, size_t k, bool allow_end, double *p_first);
 /* Learn a turn's examples (a failed one only the engine's preference among the
  * words shown, never that its word was right), then rehearse the replay
  * buffer for at most budget_ms, and at most max_passes passes in all (0: no

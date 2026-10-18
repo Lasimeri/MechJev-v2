@@ -30,6 +30,7 @@ void speak_cfg_default(speak_cfg_t *c)
     c->learn = true;
     c->lookahead = 3;
     c->keep_drop = 0.05;
+    c->truth = true;
     c->sampling = (sampling_t){
         .temp = 0.5, .top_p = 0.95, .min_p = 0.05, .repeat_penalty = 1.2, .top_k = 75, .ties_only = true};
 }
@@ -44,6 +45,22 @@ static char *trimmed(const char *s, size_t n)
         n--;
     return xstrndup(s, n);
 }
+/* The local variable's statement, its name in a slot and in turn_vars. */
+#define NOVELTY "The share of the person's words it had never heard."
+#define PARENT_HEARD 2 /* the parent's words count this many hearings (learner_hear_as) */
+
+/* The truth, three plain statements combined (speak.md: one compound
+ * statement judged the world's truth instead, "Paris." 0.963): a fact about the
+ * world it was not told, or an experience it could not have had, fails the
+ * reply. On 12 cases with known answers, 12 right. */
+static const char *TRUTH[3] = {
+    "The newest reply states a fact about the world outside the conversation, not something about the "
+    "one replying itself.",
+    "What the newest reply states was said by the person earlier in this conversation.",
+    "Read as an answer to the person, the newest reply says or implies that the one replying did, saw, "
+    "ate or went somewhere, other than talking with the person and learning words.",
+};
+
 
 int vars_load(speak_cfg_t *c, learner_t *l, const char *path, char *err, size_t errlen)
 {
@@ -120,6 +137,25 @@ int vars_load(speak_cfg_t *c, learner_t *l, const char *path, char *err, size_t 
         c->vars = xrealloc(c->vars, (c->nvars + 1) * sizeof *c->vars);
         c->vars[c->nvars++] = v;
     }
+    /* The novelty, a variable computed here (the user's ask, 2026-10-17:
+     * "confusion when presented with unknown/contextualized information"):
+     * the share of the person's words it had never heard before the turn. */
+    var_t nv = {0};
+    nv.local = true;
+    nv.text = xstrdup(NOVELTY);
+    sb_t name;
+    sb_init(&name);
+    sb_printf(&name, "turn %s", NOVELTY);
+    nv.slot = learner_slot(l, name.s);
+    sb_free(&name);
+    if (nv.slot < 0) {
+        free(nv.text);
+        snprintf(err, errlen, "%s: all %d variable slots are taken (the novelty needs one)", path, VAR_SLOTS);
+        free(t);
+        return -1;
+    }
+    c->vars = xrealloc(c->vars, (c->nvars + 1) * sizeof *c->vars);
+    c->vars[c->nvars++] = nv;
     free(t);
     return 0;
 }
@@ -139,11 +175,12 @@ void vars_free(speak_cfg_t *c)
 
 /* The questions for a scope's variables, ids v<index>; the reply so far is
  * put before each step variable's statement. */
-static void vars_questions(const speak_cfg_t *cfg, bool step, const char *reply_so_far, json_t *qs)
+static void vars_questions(const speak_cfg_t *cfg, bool step, const char *reply_so_far, const char *known,
+                           json_t *qs)
 {
     for (size_t i = 0; i < cfg->nvars; i++) {
         const var_t *v = &cfg->vars[i];
-        if (v->step != step)
+        if (v->step != step || v->local)
             continue;
         sb_t ins;
         sb_init(&ins);
@@ -152,7 +189,12 @@ static void vars_questions(const speak_cfg_t *cfg, bool step, const char *reply_
             json_quote(&ins, reply_so_far, strlen(reply_so_far));
             sb_puts(&ins, ". ");
         }
-        sb_puts(&ins, v->text);
+        /* MechJev's words, for a question about what it knows */
+        const char *ph = known ? strstr(v->text, "{words}") : NULL;
+        if (ph)
+            sb_printf(&ins, "%.*s%s%s", (int)(ph - v->text), v->text, known, ph + strlen("{words}"));
+        else
+            sb_puts(&ins, v->text);
         json_t *q = jobj();
         jobj_set(q, "type", jstr(v->choice ? "choice" : "noul"));
         jobj_set(q, "instructions", jstr(ins.s));
@@ -174,7 +216,7 @@ static void vars_read(const speak_cfg_t *cfg, bool step, const json_t *ans, floa
 {
     for (size_t i = 0; i < cfg->nvars; i++) {
         const var_t *v = &cfg->vars[i];
-        if (v->step != step)
+        if (v->step != step || v->local)
             continue;
         char id[24];
         snprintf(id, sizeof id, "v%zu", i);
@@ -640,7 +682,7 @@ static int rerank(learner_t *l, const speak_cfg_t *cfg, const char *state, char 
     json_t *qs = jobj();
     jobj_set(qs, "next", choice_q(ins.s, keys, no));
     sb_free(&ins);
-    vars_questions(cfg, true, so_far, qs);
+    vars_questions(cfg, true, so_far, NULL, qs);
     jobj_set(qs, "coherence", coherence_q(so_far));
     free(so_far);
     json_t *resp = NULL;
@@ -700,7 +742,7 @@ static int ask_reply_state(const speak_cfg_t *cfg, const char *state, char **sai
     json_t *qs = jobj();
     char *so_far = render_words(said, t);
     if (slots)
-        vars_questions(cfg, true, so_far, qs);
+        vars_questions(cfg, true, so_far, NULL, qs);
     jobj_set(qs, "coherence", coherence_q(so_far));
     free(so_far);
     json_t *resp = NULL;
@@ -927,6 +969,26 @@ static json_t *eval_json(evalres_t r)
     return o;
 }
 
+/* A passed reply into the n-gram memory, at once: each example's word with
+ * the NG_ORD words said before it and the meaning it was chosen under. The
+ * words are said[0..), the reply as it was kept (the keeper's cut). */
+static size_t ngram_learn_turn(learner_t *l, char **said, const example_t *ex, const int32_t *labels, size_t nex)
+{
+    int32_t start = lex_find(l, START);
+    size_t n = 0;
+    for (size_t k = 0; k < nex; k++) {
+        if (labels[k] < 0)
+            continue;
+        size_t pos = ex[k].pos;
+        int32_t hist[NG_ORD];
+        for (size_t j = 0; j < NG_ORD; j++)
+            hist[j] = pos + j >= NG_ORD ? lex_find(l, said[pos + j - NG_ORD]) : start;
+        ng_learn(&l->ng, hist, labels[k], ex[k].vars);
+        n++;
+    }
+    return n;
+}
+
 int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *person, char **reply,
                json_t **record, char *err, size_t errlen)
 {
@@ -939,11 +1001,30 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     char **show_w = NULL;
     size_t ns_show = cfg->show && *cfg->show ? split_words(cfg->show, &show_w) : 0;
     size_t lex_before = l->n;
-    if (!cfg->probe) /* a probe measures, it changes nothing */
-        learner_hear(l, heard, nh);
+    /* the novelty: the share of the person's words it had never heard */
+    size_t content = 0, novel = 0;
+    for (size_t i = 0; i < nh; i++) {
+        if (is_punct(heard[i]))
+            continue;
+        content++;
+        int32_t wi = lex_find(l, heard[i]);
+        novel += wi < 0 || l->v[wi].heard == 0;
+    }
+    double novelty = content ? (double)novel / (double)content : 0;
+    /* a probe measures, it changes nothing; the parent's words count more
+     * (the user's ask: MechJev "needs to imprint itself on the user like a
+     * child would as it learns language from a parent") */
+    if (!cfg->probe)
+        learner_hear_as(l, heard, nh, cfg->parent ? PARENT_HEARD : 1);
     if (!cfg->probe)
         l->turns++;
     char *state = conversation(h, person);
+    /* the words it can say, for a question about what it knows ({words}) */
+    sb_t known;
+    sb_init(&known);
+    for (size_t i = 0; i < l->n; i++)
+        if (lex_speakable(l, (int32_t)i) && strcmp(l->v[i].word, END) && !is_punct(l->v[i].word))
+            sb_printf(&known, "%s%s", known.n ? ", " : "", l->v[i].word);
 
     /* The turn's variables and how much to say, in one request. The cap is
      * the learner's stage: a few words more for every four it can say. */
@@ -951,7 +1032,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     for (int i = 0; i < VAR_SLOTS; i++)
         slots[i] = 0.5f;
     json_t *qs = jobj();
-    vars_questions(cfg, false, NULL, qs);
+    vars_questions(cfg, false, NULL, known.s ? known.s : "", qs);
     json_t *sq = jobj();
     jobj_set(sq, "type", jstr("score"));
     jobj_set(sq, "instructions", jstr("How long should the reply to what the person said last be?"));
@@ -962,6 +1043,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     jobj_set(qs, "length", sq);
     json_t *resp = NULL;
     json_t *ans = ask(cfg, state, qs, &resp, &cost, err, errlen);
+    sb_free(&known); /* asked */
     if (!ans) {
         free(state);
         free_words(heard, nh);
@@ -970,6 +1052,11 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     }
     json_t *turn_vars = jobj();
     vars_read(cfg, false, ans, slots, turn_vars);
+    for (size_t i = 0; i < cfg->nvars; i++) /* the local variables: the novelty */
+        if (cfg->vars[i].local && !cfg->vars[i].step) {
+            slots[cfg->vars[i].slot] = (float)novelty;
+            jobj_set(turn_vars, cfg->vars[i].text, jf64(round(novelty * 1e4) / 1e4));
+        }
     json_t *sc = jobj_get(jobj_get(ans, "length"), "score");
     size_t li = (size_t)fmin(3.0, fmax(0.0, round(sc && sc->t == J_NUM ? sc->f : 1.0)));
     json_free(resp);
@@ -997,6 +1084,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     json_t *trace = jarr();
     bool ended = false;
     int32_t prev = lex_find(l, START);
+    const int32_t prev_start = prev; /* START, where the reply has no word yet */
     /* Past the cap a reply only finishes its sentence, 4 words at most (a
      * cap of 3 cut "Hello! I am" off mid-sentence, 2026-10-17). */
     while (t < room && (words < cap || (t > 0 && !sentence_end(said[t - 1]) && words < cap + 4))) {
@@ -1009,7 +1097,12 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
         int32_t ranked[MAX_OPTS * 2], cands[MAX_OPTS];
         double p_first = 0;
         bool allow_end = t > 0 && sentence_end(said[t - 1]);
-        size_t got = learner_propose(l, bits, &ctx, ranked, MAX_OPTS * 2, allow_end, &p_first);
+        /* the n-gram memory's question: the words said before, the meaning */
+        int32_t hist[NG_ORD];
+        for (size_t k = 0; k < NG_ORD; k++)
+            hist[k] = t + k >= NG_ORD ? lex_find(l, said[t + k - NG_ORD]) : prev_start;
+        ng_query_t ngq = {hist, slots, -1, 0};
+        size_t got = learner_propose(l, bits, &ctx, &ngq, ranked, MAX_OPTS * 2, allow_end, &p_first);
         size_t nr = 0; /* the circuit's ranking, allowed words only */
         for (size_t i = 0; i < got; i++)
             if (allowed(l, said, t, ranked[i]))
@@ -1059,6 +1152,8 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
         jobj_set(step, "shown_all", jbool(everything));
         int32_t mem_top = learner_recall(l, &ctx, allow_end);
         jobj_set(step, "memory_top", mem_top >= 0 ? jstr(l->v[mem_top].word) : jnull());
+        jobj_set(step, "ngram_top", ngq.top >= 0 ? jstr(l->v[ngq.top].word) : jnull());
+        jobj_set(step, "ngram_gate", jf64(round(ngq.gate * 1e4) / 1e4));
         if (!nc) {
             jobj_set(step, "pick", jnull());
             jobj_set(step, "note", jstr("no word it knows may come here"));
@@ -1229,7 +1324,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
 
     /* The requirements: a Noul each about the finished reply. One below
      * 0.5 and the reply failed: its examples are kept, never learned from. */
-    json_t *checks = jobj();
+    json_t *checks = jobj(), *truth_j = jnull();
     bool failed = t == 0;
     if (cfg->nchecks && t) {
         sb_t s2;
@@ -1252,6 +1347,22 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
             snprintf(id, sizeof id, "c%zu", i);
             jobj_set(cq, id, q);
         }
+        /* The truth (the user's ask, 2026-10-17: "Opinions need to be handled
+         * seperately from experiences and facts"): three plain questions,
+         * combined here, since one compound statement judged world truth, not
+         * what MechJev could know (speak.md, "Opinions, experiences, facts") */
+        for (size_t i = 0; cfg->truth && i < 3; i++) {
+            json_t *q = jobj();
+            jobj_set(q, "type", jstr("noul"));
+            sb_t ci;
+            sb_init(&ci);
+            sb_printf(&ci, "About the newest reply only: %s", TRUTH[i]);
+            jobj_set(q, "instructions", jstr(ci.s));
+            sb_free(&ci);
+            char id[24];
+            snprintf(id, sizeof id, "t%zu", i);
+            jobj_set(cq, id, q);
+        }
         json_t *r2 = NULL;
         json_t *a2 = ask(cfg, s2.s, cq, &r2, &cost, err, errlen);
         sb_free(&s2);
@@ -1262,6 +1373,26 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
             double p = v && v->t == J_NUM ? v->f : 0;
             failed |= p < 0.5;
             jobj_set(checks, cfg->checks[i], jf64(p));
+        }
+        if (a2 && cfg->truth) {
+            double tp[3];
+            for (size_t i = 0; i < 3; i++) {
+                char id[24];
+                snprintf(id, sizeof id, "t%zu", i);
+                json_t *v = jobj_get(jobj_get(a2, id), "noul");
+                tp[i] = v && v->t == J_NUM ? v->f : 0;
+            }
+            /* a fact about the world it was not told, or an experience it could not have had */
+            bool untrue = (tp[0] >= 0.5 && tp[1] < 0.5) || tp[2] >= 0.5;
+            failed |= untrue;
+            json_t *tj = jobj();
+            jobj_set(tj, "fact", jf64(tp[0]));
+            jobj_set(tj, "told", jf64(tp[1]));
+            jobj_set(tj, "experience", jf64(tp[2]));
+            jobj_set(tj, "true", jbool(!untrue));
+            jobj_set(checks, "The reply claims no fact it was not told and no experience it could not have had.", jf64(untrue ? 0 : 1));
+            json_free(truth_j);
+            truth_j = tj; /* the three probabilities: the record's truth */
         }
         json_free(r2);
         if (!a2)
@@ -1286,6 +1417,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     double tm = now_ms();
     if (cfg->learn && !cfg->alone && !failed)
         mfit = learner_memorize(l, ctxs, labels, nex);
+    size_t ng_learned = cfg->learn && !cfg->alone && !failed ? ngram_learn_turn(l, said, ex, labels, nex) : 0;
     double mem_ms = now_ms() - tm;
     double train_ms = now_ms() - tl;
 
@@ -1294,6 +1426,9 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     jobj_set(rec, "person", jstr(person));
     jobj_set(rec, "reply", jstr(*reply));
     jobj_set(rec, "mode", jstr(cfg->probe ? "probe" : cfg->alone ? "alone" : "taught"));
+    jobj_set(rec, "novelty", jf64(round(novelty * 1e4) / 1e4));
+    jobj_set(rec, "parent", jbool(cfg->parent));
+    jobj_set(rec, "truth", truth_j);
     jobj_set(rec, "failed_requirement", jbool(failed));
     jobj_set(rec, "lexicon", ju64(l->n));
     jobj_set(rec, "new_words", ju64(l->n - lex_before));
@@ -1327,6 +1462,11 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     jobj_set(mj, "contexts", ju64(l->mem.nreplay));
     jobj_set(mj, "ms", jf64(round(mem_ms)));
     jobj_set(rec, "memory", mj);
+    json_t *nj = jobj(); /* the n-gram memory: its weight, what it learned now, its size */
+    jobj_set(nj, "weight", jf64(l->ng_weight));
+    jobj_set(nj, "learned", ju64(ng_learned));
+    jobj_set(nj, "entries", ju64(l->ng.n));
+    jobj_set(rec, "ngram", nj);
     jobj_set(rec, "engine_calls", ju64(cost.calls));
     jobj_set(rec, "engine_tokens", ju64(cost.tokens));
     jobj_set(rec, "engine_ms", jf64(round(cost.ms)));
@@ -1525,4 +1665,71 @@ json_t *speak_ask_rotations(const speak_cfg_t *cfg, const char *state, json_t *q
 {
     cost_t cost = {0};
     return ask_x(cfg, state, questions, rotations, resp, &cost, err, errlen);
+}
+
+int speak_ngram_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns_path, size_t *turns_out,
+                        size_t *steps_out, char *err, size_t errlen)
+{
+    ng_reset(&l->ng);
+    *turns_out = *steps_out = 0;
+    FILE *f = fopen(turns_path, "r");
+    if (!f) {
+        if (errno == ENOENT) /* a new learner: nothing said yet */
+            return 0;
+        snprintf(err, errlen, "%s: %s", turns_path, strerror(errno));
+        return -1;
+    }
+    int32_t start = lex_find(l, START), end = lex_find(l, END);
+    char *line = NULL;
+    size_t cap = 0;
+    ssize_t len;
+    while ((len = getline(&line, &cap, f)) > 0) {
+        char perr[128];
+        json_t *r = json_parse(line, (size_t)len, perr, sizeof perr);
+        const json_t *mode = r ? jobj_get(r, "mode") : NULL, *failed = r ? jobj_get(r, "failed_requirement") : NULL;
+        const json_t *trace = r ? jobj_get(r, "trace") : NULL;
+        if (!r || !mode || mode->t != J_STR || strcmp(mode->s, "taught") || !failed || failed->t != J_BOOL ||
+            failed->b || !trace || trace->t != J_ARR) {
+            json_free(r);
+            continue;
+        }
+        float slots[VAR_SLOTS];
+        for (int i = 0; i < VAR_SLOTS; i++)
+            slots[i] = 0.5f;
+        vars_apply(cfg, false, jobj_get(r, "turn_vars"), slots);
+        /* the keeper's cut: the words after it were not said, and the end
+         * is learned there */
+        const json_t *kept = jobj_get(r, "kept"), *ca = kept ? jobj_get(kept, "cut_at") : NULL;
+        size_t cut = ca && ca->t == J_NUM ? (size_t)ca->u : (size_t)-1;
+        int32_t hist[NG_ORD];
+        for (size_t j = 0; j < NG_ORD; j++)
+            hist[j] = start;
+        for (size_t k = 0; k < trace->n; k++) {
+            const json_t *st = trace->items[k], *tt = jobj_get(st, "t");
+            if (!tt || tt->t != J_NUM)
+                continue;
+            size_t t = (size_t)tt->u;
+            if (t > cut)
+                break;
+            const json_t *w = jobj_get(st, "engine_top"), *pk = jobj_get(st, "pick");
+            if (!w || w->t != J_STR)
+                w = pk;
+            int32_t label = t == cut ? end : w && w->t == J_STR ? lex_find(l, w->s) : -1;
+            if (label >= 0) {
+                ng_learn(&l->ng, hist, label, slots);
+                (*steps_out)++;
+            }
+            if (t == cut)
+                break;
+            /* the step's answers about the reply so far feed the next word */
+            vars_apply(cfg, true, jobj_get(st, "reply_vars"), slots);
+            memmove(hist, hist + 1, (NG_ORD - 1) * sizeof *hist);
+            hist[NG_ORD - 1] = pk && pk->t == J_STR ? lex_find(l, pk->s) : -1;
+        }
+        (*turns_out)++;
+        json_free(r);
+    }
+    free(line);
+    fclose(f);
+    return 0;
 }

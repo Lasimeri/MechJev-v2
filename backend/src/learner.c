@@ -159,7 +159,7 @@ void free_words(char **w, size_t n)
     free(w);
 }
 
-void learner_hear(learner_t *l, char **words, size_t n)
+void learner_hear_as(learner_t *l, char **words, size_t n, uint32_t times)
 {
     for (size_t i = 0; i < n; i++) {
         /* the index first: lex_add can reallocate l->v, and `l->v[lex_add(...)]`
@@ -167,9 +167,11 @@ void learner_hear(learner_t *l, char **words, size_t n)
          * and the live learner corrupted its heap when its lexicon crossed 64
          * words (2026-10-17, malloc(): invalid next->prev_inuse). */
         int32_t k = lex_add(l, words[i]);
-        l->v[k].heard++;
+        l->v[k].heard += times;
     }
 }
+
+void learner_hear(learner_t *l, char **words, size_t n) { learner_hear_as(l, words, n, 1); }
 
 int learner_slot(learner_t *l, const char *name)
 {
@@ -193,6 +195,7 @@ learner_t *learner_new(uint64_t seed)
     l->min_heard = 2;
     circuit_init(&l->circ, N_IN, N_LAYERS, LAYERS, seed);
     hd_init(&l->mem, seed ^ MEM_SEED);
+    ng_init(&l->ng, VAR_SLOTS);
     /* Always there: the start (an input only), the end, the punctuation a
      * sentence needs. Every other word is acquired by hearing it. */
     const char *base[] = {START, END, ".", ",", "?", "!"};
@@ -214,6 +217,7 @@ void learner_free(learner_t *l)
     free(l->replay);
     circuit_free(&l->circ);
     hd_free(&l->mem);
+    ng_free(&l->ng);
     free(l);
 }
 
@@ -313,8 +317,50 @@ static void memory_rerank(const learner_t *l, const hv_t *context, bool allow_en
     free(a);
 }
 
-size_t learner_propose(const learner_t *l, const uint8_t *bits, const hv_t *context, int32_t *out, size_t k,
-                       bool allow_end, double *p_first)
+/* The n-gram memory's say (ngram.h), as a cache language model's: the
+ * circuit's distribution over the candidates mixed with the n-gram's,
+ * p = (1 - lambda) p_circuit + lambda p_ngram (Grave et al. 2017,
+ * arXiv:1612.04426; Liu et al. 2024, arXiv:2401.17377), where lambda is
+ * ng_weight times the gate (Engram's alpha: 0 when the meaning contradicts
+ * every entry, and the n-gram falls silent). The scores become log
+ * probabilities over the candidates. q gets the n-gram's own first word
+ * and its gate whatever the weight (the trace shows them). */
+static void ngram_rerank(const learner_t *l, ng_query_t *q, bool allow_end, float *sc)
+{
+    double *p = xcalloc(l->n ? l->n : 1, sizeof *p);
+    q->gate = ng_predict(&l->ng, q->hist, q->vars, l->n, p);
+    q->top = -1;
+    double z = 0;
+    for (size_t i = 0; i < l->n; i++)
+        if (candidate(l, (int32_t)i, allow_end) && p[i] > 0) {
+            z += p[i];
+            if (q->top < 0 || p[i] > p[q->top])
+                q->top = (int32_t)i;
+        }
+    double lam = l->ng_weight * q->gate;
+    if (z <= 0 || lam <= 0) {
+        free(p);
+        return;
+    }
+    if (lam > 1)
+        lam = 1;
+    double mx = -INFINITY, zc = 0;
+    for (size_t i = 0; i < l->n; i++)
+        if (candidate(l, (int32_t)i, allow_end))
+            mx = fmax(mx, sc[i]);
+    for (size_t i = 0; i < l->n; i++)
+        if (candidate(l, (int32_t)i, allow_end))
+            zc += exp(sc[i] - mx);
+    for (size_t i = 0; i < l->n; i++)
+        if (candidate(l, (int32_t)i, allow_end)) {
+            double pm = (1 - lam) * exp(sc[i] - mx) / zc + lam * p[i] / z;
+            sc[i] = (float)log(fmax(pm, 1e-12));
+        }
+    free(p);
+}
+
+size_t learner_propose(const learner_t *l, const uint8_t *bits, const hv_t *context, ng_query_t *ngq,
+                       int32_t *out, size_t k, bool allow_end, double *p_first)
 {
     uint8_t a[OUT_BITS];
     circuit_run(&l->circ, bits, a);
@@ -324,6 +370,8 @@ size_t learner_propose(const learner_t *l, const uint8_t *bits, const hv_t *cont
             sc[i] = score_bits(&l->v[i], a);
     if (context && l->mem_weight > 0)
         memory_rerank(l, context, allow_end, sc);
+    if (ngq)
+        ngram_rerank(l, ngq, allow_end, sc);
     size_t m = 0;
     float mx = -INFINITY;
     for (size_t i = 0; i < l->n; i++) {
@@ -698,6 +746,7 @@ int learner_load(const char *path, learner_t **out, char *err, size_t errlen)
         !R(l->emb_t) || !R(l->next_id) || !R(n))
         goto bad;
     hd_init(&l->mem, l->seed ^ MEM_SEED);
+    ng_init(&l->ng, VAR_SLOTS);
     for (uint64_t i = 0; i < n; i++) {
         uint16_t len;
         if (!R(len))

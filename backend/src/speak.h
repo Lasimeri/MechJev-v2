@@ -37,7 +37,8 @@ typedef struct {
     char *text;
     char **opts;
     size_t nopts;
-    int slot; /* the first slot */
+    int slot;   /* the first slot */
+    bool local; /* computed here, not asked of the engine (the novelty: speak.c) */
 } var_t;
 
 typedef struct {
@@ -57,6 +58,8 @@ typedef struct {
     size_t lookahead; /* the rerank's best scored for coherence; 0: the rerank's top is said */
     double keep_drop; /* the coherence keeper: end a reply this far below its best sentence end; < 0: off */
     const char *show; /* words a taught turn offers besides the person's (the teacher's demonstration: the answer's words); NULL: none */
+    bool parent; /* the person speaking is the parent (no other speaker named): heard PARENT_HEARD times over */
+    bool truth;  /* judge the truth: no fact it was not told, no experience it could not have had (speak.md) */
     sampling_t sampling;
     /* Called with the reply so far after every word (a terminal shows it live). */
     void (*on_word)(void *ud, const char *reply_so_far);
@@ -105,6 +108,12 @@ char *speak_conversation(const history_t *h, const char *person);
  * scales. */
 int speak_memory_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns_path, json_t **report,
                          char *err, size_t errlen);
+/* The n-gram memory made again from turns.jsonl (ngram.h): each passed
+ * taught turn's words, up to the keeper's cut, with the meaning each was
+ * chosen under (as speak_memory_rebuild rebuilds the slots). At every start:
+ * nothing of it is stored. */
+int speak_ngram_rebuild(learner_t *l, const speak_cfg_t *cfg, const char *turns_path, size_t *turns,
+                        size_t *steps, char *err, size_t errlen);
 
 int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *person,
                char **reply, json_t **record, char *err, size_t errlen);

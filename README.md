@@ -58,7 +58,7 @@ The language is acquired by the circuit. Nothing in the 35B changes.
 ║                     │ tmux send-keys: F2, line, Enter    │                             │ ║
 ║  ┌──────────────────┴──────────────────┐  /v1/generate   │                             │ ║
 ║  │ teacher (C): Qwen, from outside     │ ──────────────▶ │                             │ ║
-║  │ the ladder: 17 stages, a new line   │  /v1/systemone  │                             │ ║
+║  │ the ladder: 18 stages, a new line   │  /v1/systemone  │                             │ ║
 ║  │ a turn; /v1/next to MechJev         │ ◀────────────── │                             │ ║
 ║  │ lessons.txt ─▶ lessons.jsonl        │                 │                             │ ║
 ║  └─────────────────────────────────────┘                 └─────────────────────────────┘ ║
@@ -153,6 +153,8 @@ Qwen writes. `mjev2 teach [N]` starts the engine and MechJev first.
 | `MJ2_LOOKAHEAD` | `3` | the engine's best words scored for coherence before one is said (0: its first is said) |
 | `MJ2_KEEP_DROP` | `0.05` | the coherence keeper: how far below its best sentence end a reply may fall (below 0: off) |
 | `MJ2_MEMORY` | `0` | the fast memory's weight in a word's score (0: it learns but does not speak) |
+| `MJ2_NGRAM` | `1` | the meaning-gated n-gram memory's weight (times its gate); 0: it learns, silent (backend/src/ngram.md) |
+| `MJ2_TRUTH` | `1` | judge the truth: no fact it was not told, no experience it could not have had; opinions free (speak.md); 0 off |
 | `MJ2_RECENT_SHARE` | `0` | share of rehearsal passes drawn from the newest examples |
 | `MJ2_PROBES`, `MJ2_PROBE_REPEATS` | `probes.txt`, `3` | the probe questions, and times each is asked |
 | `MJ2_VARS`, `MJ2_CHECKS` | `variables.txt`, `restrictions.txt` | the variables and the requirements |
@@ -228,10 +230,11 @@ should do that for MechJev"), up a ladder: "Qwen needs to prompt
 increasingly complex prompts", communication first. `backend/build/teacher`
 is a client of the engine and of MechJev's server:
 
-- **The ladder** is `lessons.txt` in order, 17 stages from greetings to
-  explaining a thing in its own words: greet, feeling, yes-no, name-tell,
-  name, thanks, goodbye, likes, day, weather, why, two-part, describe,
-  follow-up, about-me, learning, explain. Each stage opens with a check of
+- **The ladder** is `lessons.txt` in order, 18 stages from greetings to
+  explaining a thing in its own words: greet, feeling, yes-no, unknown (a
+  made-up thing, which it should say it does not know), name-tell, name,
+  thanks, goodbye, likes, day, weather, why, two-part, describe, follow-up,
+  about-me, learning, explain. Each stage opens with a check of
   MechJev alone (what it has mastered is climbed past at once), then
   taught turns, a check after every 2; 2 of its last 3 checks passed move
   it up.

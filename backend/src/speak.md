@@ -162,3 +162,65 @@ Block 7's run-ons taught the circuit to run on (its probe answers: "I am
 too am happy.", "I did? Do?"); the keeper teaches the end at the best
 sentence instead. Not interleaved, and block 8 was the fourth pass over
 these messages (block 7, the third, got worse, not better).
+
+## What it knows: the parent, the novelty, P(IK)
+
+The user's asks (2026-10-17): "MechJev needs to communicate when it doesn't
+know something", and it "needs to imprint itself on the user like a child
+would as it learns language from a parent, so conversely, confusion when
+presented with unknown/contextualized information".
+
+- **The parent.** A turn with no other speaker named (the person at the
+  TUI; the teacher's turns are `speaker` "Qwen") is the parent's: its words
+  are heard twice over (`PARENT_HEARD`, `learner_hear_as`), so a word the
+  parent says once is speakable (`min_heard` 2), as a child's first words
+  are its parent's. The record's `parent` says which.
+- **The novelty**, a variable computed here, not asked: the share of the
+  person's words it had never heard before the turn, in its own slot and in
+  the record's `turn_vars` (so the rebuilds see it as the turn did) and
+  `novelty`.
+- **P(IK)** (Kadavath et al., arXiv:2207.05221), a turn variable the engine
+  is asked about MechJev, with the words it can say in place of `{words}`
+  (variables.txt): "The one replying is a beginner who can say only these
+  words: .... With them it can truthfully answer the person's last
+  message."
+
+Both are inputs of the circuit, so it can learn the form for not knowing;
+the teacher's `unknown` stage teaches it (teach.md).
+
+## Opinions, experiences, facts
+
+The user's ask (2026-10-17): "Opinions need to be handled seperately from
+experiences and facts". A turn variable, a Choice, tells them apart: what
+the person's message asks for (its opinion or feeling, an experience it
+had, a fact about the world, or nothing of these). Measured: "Have you ever
+been to Zorvania?" an experience 0.862; "Do you like pizza?" an opinion
+0.991.
+
+An opinion or a feeling of its own may be anything. An experience or a fact
+it claims must be one it could have: MechJev has only talked with the
+person and learned words, and knows a fact only if it was told. That is a
+requirement, judged with the others (`cfg.truth`, `MJ2_TRUTH=0` off), from
+three plain statements combined in code:
+
+- F: "The newest reply states a fact about the world outside the
+  conversation, not something about the one replying itself."
+- T: "What the newest reply states was said by the person earlier in this
+  conversation."
+- E: "Read as an answer to the person, the newest reply says or implies
+  that the one replying did, saw, ate or went somewhere, other than talking
+  with the person and learning words."
+
+The reply fails when (F and not T) or E. One compound statement had been
+tried first and passed everything: the engine judged the world's truth, not
+what MechJev could know ("Paris." to "What is the capital of France?"
+0.963). On 12 cases with known answers (`~/.cache/mechjev-v2-truth-*.txt`):
+
+| statements | right of 12 |
+| --- | --- |
+| one compound statement (three wordings) | 5, 6, 6 of the first 9 (each passed every reply) |
+| F, T, E combined | 12 ("Paris." F 0.982; "I ate pizza." E 0.938; "Yes, fine." to Zorvania E 0.635, the thinnest; a told name back T 0.910, a wrong one T 0.291) |
+
+Live (2026-10-17): "Yes!" to "Have you ever been to Zorvania?" failed it
+(experience 0.888); "Yes am fine." to "Do you like pizza?" passed it. The
+record's `truth` keeps the three probabilities; `checks` keeps 1 or 0.

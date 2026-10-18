@@ -43,6 +43,9 @@ pub struct Talk {
     /// and who said it (`speaker.txt`: the teacher; else the person).
     pub pending: Option<String>,
     pub pending_by: Option<String>,
+    /// The turn the learner is answering now, whoever asked (`turn.json`:
+    /// {line, speaker, mode}): the teacher's API turns and the probes too.
+    pub live: Option<Value>,
     /// The reply so far of a turn in progress.
     pub speaking: Option<String>,
     /// Rows scrolled up from the bottom of the conversation.
@@ -61,6 +64,7 @@ impl Default for Talk {
             probes_len: u64::MAX,
             pending: None,
             pending_by: None,
+            live: None,
             speaking: None,
             back: 0,
             turns_len: u64::MAX,
@@ -97,6 +101,11 @@ impl Talk {
             // the last probe: the rows sharing the newest time stamp
             let last = rows.last().map(|r| r["time"].clone());
             self.probes = rows.into_iter().filter(|r| Some(&r["time"]) == last.as_ref()).collect();
+            changed = true;
+        }
+        let live = std::fs::read_to_string(dir.join("turn.json")).ok().and_then(|s| serde_json::from_str::<Value>(&s).ok());
+        if live != self.live {
+            self.live = live;
             changed = true;
         }
         let by = std::fs::read_to_string(dir.join("speaker.txt")).ok().map(|s| s.trim().to_string());

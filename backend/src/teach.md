@@ -29,9 +29,13 @@ reply Qwen wrote.
 The user's asks (2026-10-17): "Qwen needs to prompt increasingly complex
 prompts", "MechJev needs to learn to communicate first" (code comes after
 it), and "the repetitions aren't needed". The stages are the lines of
-`lessons.txt` in order, each harder than the one before, 17 now: greet,
-feeling, yes-no, name-tell, name, thanks, goodbye, likes, day, weather,
-why, two-part, describe, follow-up, about-me, learning, explain.
+`lessons.txt` in order, each harder than the one before, 18 now: greet,
+feeling, yes-no, unknown, name-tell, name, thanks, goodbye, likes, day,
+weather, why, two-part, describe, follow-up, about-me, learning, explain.
+`unknown` (the user's ask: MechJev "needs to communicate when it doesn't
+know something") has Qwen ask about a made-up thing as if everyone knew
+it; the check holds when MechJev says it does not know or asks what it is
+(R-Tuning, arXiv:2311.09677: saying so is a skill that carries over).
 
 `NAME | GOAL | CHECK [| HELD-OUT GOAL [| SHOWN WORDS]]`, a line each:
 

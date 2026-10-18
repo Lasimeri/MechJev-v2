@@ -29,3 +29,13 @@ step noul The reply so far is a question.
 turn noul The person's last message asks a yes or no question.
 turn noul The person's last message asks what, who, where, when, why or how.
 turn choice What act should a good reply begin with? | confirm or agree | deny | speak of itself | greet | thank | take leave | ask back
+# What it knows (the user's ask, 2026-10-17: "MechJev needs to communicate
+# when it doesn't know something"): P(IK), after Kadavath et al., "Language
+# Models (Mostly) Know What They Know" (arXiv:2207.05221), asked of the
+# engine about MechJev, with the words MechJev can say in place of {words}.
+# Beside it the code's own variable, the novelty (speak.c): the share of the
+# person's words MechJev had never heard.
+turn noul The one replying is a beginner who can say only these words: {words}. With them it can truthfully answer the person's last message.
+# What the message asks for: an opinion is MechJev's own to give, an
+# experience or a fact must be true (restrictions.txt).
+turn choice What does the person's last message ask the one replying for? | its opinion or feeling | an experience it had | a fact about the world | nothing of these: a greeting, thanks or goodbye

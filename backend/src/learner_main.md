@@ -25,7 +25,7 @@ the teacher:
 | `GET /v1/stats` | what `stats` prints |
 | `POST /v1/talk {message, alone, show}` | one turn in the conversation, its record back. `alone`: the circuit by itself. `show`: words the turn offers the engine besides MechJev's and the person's (heard first, so they are in its lexicon): the teacher's demonstration of an answer whose words the line does not hold |
 | `POST /v1/hear {text}` | English text read |
-| `POST /v1/probe` | the fixed probes, a row each (`probes.jsonl`) |
+| `POST /v1/probe [{ngram_weight}]` | the fixed probes, a row each (`probes.jsonl`); `ngram_weight` sets the n-gram memory's weight for these probes only (tools/ngram_ab.sh) |
 | `POST /v1/probe {message}` | that message to the circuit alone, from an empty conversation, nothing heard, learned or counted: the teacher's try; the turn record back |
 | `POST /v1/next {show, alone, speaker}` | the next `/v1/talk` turn's settings, used by it once: the teacher, typing its line in the TUI as a person would, sets its answer words (`show`), MechJev alone for a check, and who speaks (`speaker`, "Qwen": the turn record's `speaker`, the TUI's label) |
 
@@ -74,7 +74,8 @@ the replay, P passes (by default as many as the old circuit had), holding
 out the last 10 taught turns first to compare the new circuit with what the
 old one measured on them (learner.md, "Four input bits a variable").
 
-The other settings: `MJ2_KEEP_DROP` (the coherence keeper, 0.05),
+The other settings: `MJ2_NGRAM` (the n-gram memory's weight, 0; ngram.md),
+`MJ2_KEEP_DROP` (the coherence keeper, 0.05),
 `MJ2_LOOKAHEAD` (3), `MJ2_RECENT_SHARE` (0), the sampling settings
 (`MJ2_TEMP` and the rest), `MJ2_MIN_HEARD`, `MJ2_VARS`, `MJ2_CHECKS`; the
 README's table has them all.
