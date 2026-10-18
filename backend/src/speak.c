@@ -1588,7 +1588,14 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
              * gates' alone. Measured: wrong habit words 0.28 to 0.30 ("Wet"
              * to a name question), right ones 0.52 and above
              * (~/.cache/mechjev-v2-judge-word.txt). */
-            if (cfg->veto && !is_punct(l->v[word].word) && word != end) {
+            /* A sentence's end or the end is judged too: whether the reply as
+             * it is says all it should (complete_q). Passed unasked, the
+             * circuit's one-word habit ended "My" at once ("My.", the day
+             * stage); a comma passes. */
+            bool may_end = false;
+            for (size_t i = 0; i < no; i++)
+                may_end |= t > 0 && (order[i] == end || sentence_end(l->v[order[i]].word));
+            if (cfg->veto && !(is_punct(l->v[word].word) && !sentence_end(l->v[word].word))) {
                 char **w2 = xmalloc((t + 2) * sizeof *w2);
                 for (size_t j = 0; j < t; j++)
                     w2[j] = g->said[j];
@@ -1603,26 +1610,34 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
                     free(text);
                 }
                 free(w2);
+                if (may_end) {
+                    char *as_is = render_words(l, g->said, t);
+                    jobj_set(vq, "complete", complete_q(as_is));
+                    free(as_is);
+                }
                 json_t *vresp = NULL;
                 json_t *vans = ask(cfg, state, vq, &vresp, cost, err, errlen);
                 if (!vans) {
                     json_free(step);
                     return -1;
                 }
+                const json_t *cpl = may_end ? jobj_get(jobj_get(vans, "complete"), "noul") : NULL;
+                double complete = cpl && cpl->t == J_NUM ? cpl->f : 1;
                 json_t *vj = jarr();
                 bool chosen = false;
                 for (size_t i = 0; i < no; i++) {
                     char id[16];
                     snprintf(id, sizeof id, "v%zu", i);
                     const json_t *a = jobj_get(vans, id);
+                    bool ends = order[i] == end || sentence_end(l->v[order[i]].word);
                     bool mark = is_punct(l->v[order[i]].word) || order[i] == end;
-                    double v = mark ? 1 : level_of(a, sizeof VIABILITY / sizeof *VIABILITY);
+                    double v = ends ? complete : mark ? 1 : level_of(a, sizeof VIABILITY / sizeof *VIABILITY);
                     json_t *o = jobj();
                     jobj_set(o, "word", jstr(l->v[order[i]].word));
                     jobj_set(o, "from", jstr(why[i]));
-                    jobj_set(o, "coherence", mark ? jnull() : jf64(round(v * 1e4) / 1e4));
+                    jobj_set(o, ends ? "complete" : "coherence", mark && !ends ? jnull() : jf64(round(v * 1e4) / 1e4));
                     jarr_push(vj, o);
-                    if (!chosen && v >= COHERENCE_FLOOR) {
+                    if (!chosen && v >= (ends ? 0.5 : COHERENCE_FLOOR)) {
                         chosen = true;
                         word = order[i], from = why[i];
                         if (i)
