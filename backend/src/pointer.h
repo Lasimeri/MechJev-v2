@@ -89,7 +89,8 @@ typedef struct {
     uint32_t t, ns;
     int32_t said[PT_SAID];
     int32_t label;
-    float pc; /* the circuit's probability of the label */
+    float pc;          /* the circuit's probability of the label, as it was before it learned the turn */
+    int32_t ctop_then; /* the circuit's first word then (the trace's circuit_top1), -1: none */
 } pt_step_t;
 
 typedef struct {

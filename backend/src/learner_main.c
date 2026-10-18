@@ -228,6 +228,10 @@ static int open_ctx(ctx_t *c, bool write, char *err, size_t errlen)
         s->min_p = strtod(v, NULL);
     if ((v = getenv("MJ2_REPEAT_PENALTY")) && *v)
         s->repeat_penalty = strtod(v, NULL);
+    if ((v = getenv("MJ2_ABSTAIN")) && *v)
+        c->cfg.abstain = strcmp(v, "0") != 0;
+    if ((v = getenv("MJ2_VETO")) && *v)
+        c->cfg.veto = strcmp(v, "0") != 0;
     if ((v = getenv("MJ2_GATED")) && *v)
         c->cfg.gated = strcmp(v, "0") != 0;
     if ((v = getenv("MJ2_COPY")) && *v)
@@ -414,7 +418,7 @@ static void turn_end(const ctx_t *c, const json_t *rec, const char *mode, const 
     jobj_set(e, "instance", c->name ? jstr(c->name) : jnull());
     jobj_set(e, "mode", jstr(mode));
     jobj_set(e, "speaker", speaker && *speaker ? jstr(speaker) : jnull());
-    const char *keep[] = {"person", "reply", "failed_requirement", "coherence_final", "ms_per_word"};
+    const char *keep[] = {"person", "reply", "failed_requirement", "coherence_final", "ms_per_word", "abstained"};
     for (size_t i = 0; i < sizeof keep / sizeof *keep; i++) {
         const json_t *v = jobj_get(rec, keep[i]);
         if (v)

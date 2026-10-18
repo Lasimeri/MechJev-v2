@@ -71,6 +71,8 @@ typedef struct {
      * the stage check), the first accepted kept; never the engine's choice
      * (the user's ask, 2026-10-18; MJ2_GATED; speak.md, "Gated") */
     bool gated;
+    bool veto; /* gated: the engine's coherence may veto a gate's word, the next is tried (MJ2_VETO, on) */
+    bool abstain; /* gated: when every word is vetoed it says it does not know, never the gates' first (MJ2_ABSTAIN, on) */
     const char *instance; /* this learner's name in the harness, for its tries (activity.h); NULL: its own */
     sampling_t sampling;
     /* Called with the reply so far after every word (a terminal shows it live). */

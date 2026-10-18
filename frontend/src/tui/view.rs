@@ -1048,6 +1048,9 @@ fn talk(f: &mut Frame, a: &mut App) {
         if let Some(ms) = t["ms_per_word"].as_f64().filter(|m| *m > 0.0) {
             note.push_str(&format!("  · {:.0} s a word", ms / 1e3));
         }
+        if t["abstained"].as_bool() == Some(true) {
+            note.push_str("  · said it does not know");
+        }
         if t["failed_requirement"].as_bool() == Some(true) {
             note.push_str("  · failed a requirement");
         }

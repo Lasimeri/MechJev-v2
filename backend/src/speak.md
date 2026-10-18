@@ -364,3 +364,19 @@ n-gram and the pointer from the turns before only,
 `~/.cache/mechjev-v2-cascade-check.txt`): agreement with the engine's word
 226 for today's mixture, 217 for the gates (the n-gram decided 33 words, 19
 right). The grounding toy by a margin: 0.887 against 0.906 (8 seeds).
+
+**The coherence veto** (`MJ2_VETO`, on with `MJ2_GATED`; the user's ask,
+2026-10-18: "it's still having issues choosing the right words ... and
+using the LLM as a coherence reference"). The gated replies missed on
+habit words: "Wet." to "The moon is round. Is the moon round?", "Red!" to
+"Tell me what your name is." The engine's viability of such a word is 0.28
+to 0.30, of a right one 0.52 and above. So at each word the gates' words
+are taken in their order (the pointer's, the n-gram's, the circuit's four
+best matches), the engine says how coherent the reply would be with each
+(`viability_q`, one request, the stage's goal as the hint in a taught
+turn), and the first at 0.5 or above is said; if none is, the gates' first.
+The engine ranks nothing: a word is only ever vetoed, and the next of the
+gates' own is tried. A mark or the end is not asked about. The trace keeps
+each word's coherence (`veto`) and how many were vetoed (`vetoed`); a word
+said after a veto is learned as the word, so the circuit learns from the
+engine's coherence without taking its choice.

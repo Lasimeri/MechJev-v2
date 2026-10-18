@@ -231,7 +231,8 @@ pub fn try_line(e: &Value) -> String {
             .unwrap_or_default();
         if failed.is_empty() { "rejected".to_string() } else { format!("rejected: {}", failed.join("; ")) }
     };
-    format!("{on}try {} \"{reply}\" {verdict}", e["try"])
+    let not_knowing = if e["abstained"].as_bool() == Some(true) { " (said it does not know)" } else { "" };
+    format!("{on}try {} \"{reply}\"{not_knowing} {verdict}", e["try"])
 }
 
 /// One probe question's repeats: how many passed every requirement, the mean

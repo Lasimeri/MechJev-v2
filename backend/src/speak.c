@@ -38,6 +38,8 @@ void speak_cfg_default(speak_cfg_t *c)
     c->grammar = true;
     c->persona = true; /* "No." to "Have you ever been to Zorvania?" with it, "Yes." without (speak.md) */
     c->copy = true; /* told, judged by the teacher: 8 of 12 with it, 0 of 12 without (pointer.md) */
+    c->veto = true;
+    c->abstain = true;
     c->sampling = (sampling_t){
         .temp = 0.5, .top_p = 0.95, .min_p = 0.05, .repeat_penalty = 1.2, .top_k = 75, .ties_only = true};
 }
@@ -1366,6 +1368,8 @@ static int judge_teacher_check(const speak_cfg_t *cfg, const char *person, const
 #define GATED_TRIES 3  /* replies tried in a taught turn, the first accepted kept */
 #define NG_GATE_ON 0.5 /* the n-gram says the word only with its gate this open... */
 #define NG_AMONG 3     /* ...and only when the word is among the circuit's own best matches */
+#define VETO_AMONG 4   /* the circuit's best matches the coherence veto may go down to */
+#define COHERENCE_FLOOR 0.5 /* the engine's viability a word needs to be said (gated, cfg.veto) */
 
 typedef struct {
     int32_t first;   /* the first word, -1: the gates' own */
@@ -1383,6 +1387,9 @@ typedef struct {
     bool *have;
     json_t *trace;
     int32_t first_alt; /* the circuit's best other first word (the third try's last resort) */
+    bool abstained;       /* a word every gate offered was vetoed: it said it does not know instead */
+    int abstain;          /* saying so: 1 the word next, 2 the question mark next, 3 the end next */
+    int32_t abstain_word; /* the line's word it asks about (what the pointer attends to) */
 } gen_t;
 
 static void gen_init(gen_t *g, size_t room)
@@ -1396,6 +1403,7 @@ static void gen_init(gen_t *g, size_t room)
     g->have = xcalloc(room + 2, sizeof *g->have);
     g->trace = jarr();
     g->first_alt = -1;
+    g->abstain_word = -1;
 }
 
 static void gen_free(gen_t *g)
@@ -1449,7 +1457,15 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
         jobj_set(step, "circuit_top1", nr ? jstr(l->v[ranked[0]].word) : jnull());
         int32_t word = -1;
         const char *from = "circuit";
-        if (t == 0 && plan.first >= 0)
+        if (g->abstain) { /* saying it does not know: "what", the word, "?", the end */
+            if (g->abstain == 1 && g->abstain_word >= 0)
+                word = g->abstain_word, g->abstain = 2;
+            else if (g->abstain <= 2)
+                word = lex_find(l, "?"), g->abstain = 3;
+            else
+                word = end;
+            from = "abstained";
+        } else if (t == 0 && plan.first >= 0)
             word = plan.first, from = "tried";
         else if (plan.short_form && t == 1) {
             for (size_t i = 0; i < nr && word < 0; i++)
@@ -1460,6 +1476,13 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
             from = "short";
         } else if (plan.short_form && t >= 2)
             word = end, from = "short";
+        /* the gates' words, in their order: the pointer's, the n-gram's, the
+         * circuit's best code matches */
+        int32_t order[VETO_AMONG + 2];
+        const char *why[VETO_AMONG + 2];
+        size_t no = 0;
+        float att[PT_MAXT]; /* the pointer's attention over the line (the veto's second words) */
+        bool have_att = false;
         if (word < 0 && cfg->copy && pl->n) { /* the pointer */
             uint8_t oa[OUT_BITS];
             learner_out_bits(l, bits, oa);
@@ -1467,12 +1490,12 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
             size_t nsid = 0;
             for (size_t q = 0; q < t && nsid < PT_SAID; q++)
                 sid[nsid++] = lex_find(l, g->said[q]);
-            float att[PT_MAXT];
+            have_att = true;
             float pg = pt_forward(&l->pt, oa, slots, pl, t, sid, nsid, att);
             int32_t w = pt_choose(pl, att, pg);
             jobj_set(step, "pointer_gate", jf64(round(pg * 1e4) / 1e4));
             if (w >= 0 && w != start && allowed(l, g->said, t, w))
-                word = w, from = "pointer";
+                order[no] = w, why[no++] = "pointer";
         }
         if (word < 0 && nr) { /* the n-gram, only among the circuit's own best */
             int32_t hist[NG_ORD];
@@ -1487,12 +1510,177 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
             free(p);
             jobj_set(step, "ngram_top", nw >= 0 ? jstr(l->v[nw].word) : jnull());
             jobj_set(step, "ngram_gate", jf64(round(gate * 1e4) / 1e4));
-            for (size_t i = 0; i < nr && i < NG_AMONG && word < 0; i++)
-                if (gate >= NG_GATE_ON && ranked[i] == nw)
-                    word = nw, from = "ngram";
+            bool among = false;
+            for (size_t i = 0; i < nr && i < NG_AMONG; i++)
+                among |= ranked[i] == nw;
+            if (gate >= NG_GATE_ON && among && !(no && order[0] == nw))
+                order[no] = nw, why[no++] = "ngram";
         }
-        if (word < 0 && nr)
-            word = ranked[0], from = "circuit";
+        for (size_t i = 0; word < 0 && i < nr && i < VETO_AMONG; i++) {
+            bool dup = false;
+            for (size_t j = 0; j < no; j++)
+                dup |= order[j] == ranked[i];
+            if (!dup)
+                order[no] = ranked[i], why[no++] = "circuit";
+        }
+        if (word < 0 && no) {
+            word = order[0], from = why[0];
+            /* The coherence veto (the user's ask, 2026-10-18: "using the LLM
+             * as a coherence reference"): the engine says how coherent the
+             * reply would be with each of the gates' words (viability_q),
+             * and the first in the gates' order at COHERENCE_FLOOR or above
+             * is said; the engine ranks nothing. A mark or the end is the
+             * gates' alone. Measured: wrong habit words 0.28 to 0.30 ("Wet"
+             * to a name question), right ones 0.52 and above
+             * (~/.cache/mechjev-v2-judge-word.txt). */
+            if (cfg->veto && !is_punct(l->v[word].word) && word != end) {
+                char **w2 = xmalloc((t + 2) * sizeof *w2);
+                for (size_t j = 0; j < t; j++)
+                    w2[j] = g->said[j];
+                json_t *vq = jobj();
+                for (size_t i = 0; i < no; i++) {
+                    if (is_punct(l->v[order[i]].word) || order[i] == end)
+                        continue;
+                    w2[t] = l->v[order[i]].word;
+                    char *text = render_words(l, w2, t + 1), id[16];
+                    snprintf(id, sizeof id, "v%zu", i);
+                    jobj_set(vq, id, viability_q(text, cfg->extra_check));
+                    free(text);
+                }
+                free(w2);
+                json_t *vresp = NULL;
+                json_t *vans = ask(cfg, state, vq, &vresp, cost, err, errlen);
+                if (!vans) {
+                    json_free(step);
+                    return -1;
+                }
+                json_t *vj = jarr();
+                bool chosen = false;
+                for (size_t i = 0; i < no; i++) {
+                    char id[16];
+                    snprintf(id, sizeof id, "v%zu", i);
+                    const json_t *a = jobj_get(vans, id);
+                    bool mark = is_punct(l->v[order[i]].word) || order[i] == end;
+                    double v = mark ? 1 : level_of(a, sizeof VIABILITY / sizeof *VIABILITY);
+                    json_t *o = jobj();
+                    jobj_set(o, "word", jstr(l->v[order[i]].word));
+                    jobj_set(o, "from", jstr(why[i]));
+                    jobj_set(o, "coherence", mark ? jnull() : jf64(round(v * 1e4) / 1e4));
+                    jarr_push(vj, o);
+                    if (!chosen && v >= COHERENCE_FLOOR) {
+                        chosen = true;
+                        word = order[i], from = why[i];
+                        if (i)
+                            jobj_set(step, "vetoed", ju64(i)); /* the gates' words before it, vetoed */
+                    }
+                }
+                json_free(vresp);
+                /* Every word of the gates' vetoed: the line's own words, in the
+                 * order the pointer's attention ranks them (its gate shut), are
+                 * the next proposals. The right word is often there and in no
+                 * gate's first four: "round" to "The moon is round. Is the moon
+                 * round?" while the circuit offered wet 0.13, hot 0.15, big
+                 * 0.30, know 0.46. */
+                if (!chosen && have_att) {
+                    int32_t line[VETO_AMONG];
+                    size_t nl = 0;
+                    bool used_tok[PT_MAXT] = {false};
+                    while (nl < VETO_AMONG) {
+                        int best = -1;
+                        for (int j = 0; j < pl->n; j++) {
+                            int32_t w = pl->tok[j];
+                            if (used_tok[j] || w < 0 || w == start || w == end || is_punct(l->v[w].word) ||
+                                !allowed(l, g->said, t, w))
+                                continue;
+                            bool dup = false;
+                            for (size_t i = 0; i < no; i++)
+                                dup |= order[i] == w;
+                            for (size_t i = 0; i < nl; i++)
+                                dup |= line[i] == w;
+                            if (dup) {
+                                used_tok[j] = true;
+                                continue;
+                            }
+                            if (best < 0 || att[j] > att[best])
+                                best = j;
+                        }
+                        if (best < 0)
+                            break;
+                        used_tok[best] = true;
+                        line[nl++] = pl->tok[best];
+                    }
+                    char **w3 = xmalloc((t + 2) * sizeof *w3);
+                    for (size_t j = 0; j < t; j++)
+                        w3[j] = g->said[j];
+                    json_t *lq = jobj();
+                    for (size_t i = 0; i < nl; i++) {
+                        w3[t] = l->v[line[i]].word;
+                        char *text = render_words(l, w3, t + 1), id[16];
+                        snprintf(id, sizeof id, "l%zu", i);
+                        jobj_set(lq, id, viability_q(text, cfg->extra_check));
+                        free(text);
+                    }
+                    free(w3);
+                    json_t *lresp = NULL;
+                    json_t *lans = nl ? ask(cfg, state, lq, &lresp, cost, err, errlen) : NULL;
+                    if (nl && !lans) {
+                        json_free(vj);
+                        json_free(step);
+                        return -1;
+                    }
+                    if (!nl)
+                        json_free(lq);
+                    for (size_t i = 0; i < nl; i++) {
+                        char id[16];
+                        snprintf(id, sizeof id, "l%zu", i);
+                        double v = level_of(jobj_get(lans, id), sizeof VIABILITY / sizeof *VIABILITY);
+                        json_t *o = jobj();
+                        jobj_set(o, "word", jstr(l->v[line[i]].word));
+                        jobj_set(o, "from", jstr("line"));
+                        jobj_set(o, "coherence", jf64(round(v * 1e4) / 1e4));
+                        jarr_push(vj, o);
+                        if (!chosen && v >= COHERENCE_FLOOR) {
+                            chosen = true;
+                            word = line[i], from = "line";
+                            jobj_set(step, "vetoed", ju64(no + i));
+                        }
+                    }
+                    json_free(lresp);
+                }
+                /* Nothing any gate offered is coherent: it says it does not
+                 * know, never the gates' first anyway (the user, 2026-10-18:
+                 * "The model architecture is still badly hallucinating";
+                 * "Wet." came so, after wet 0.13, hot 0.15, big 0.30, know
+                 * 0.46). At the first word its own form for the unknown, as
+                 * the unknown stage taught it: "What", the line's word the
+                 * pointer attends to, "?"; later, the reply ends where it is. */
+                if (!chosen && cfg->abstain) {
+                    int32_t what = lex_find(l, "what");
+                    if (t > 0) {
+                        word = sentence_end(g->said[t - 1]) ? end : lex_find(l, ".");
+                        g->abstain = 3;
+                    } else if (what >= 0 && allowed(l, g->said, 0, what)) {
+                        int best = -1;
+                        for (int j = 0; have_att && j < pl->n; j++) {
+                            int32_t w = pl->tok[j];
+                            if (w < 0 || w == start || w == end || w == what || is_punct(l->v[w].word))
+                                continue;
+                            if (best < 0 || att[j] > att[best])
+                                best = j;
+                        }
+                        word = what;
+                        g->abstain = 1;
+                        g->abstain_word = best >= 0 ? pl->tok[best] : -1;
+                    }
+                    if (g->abstain) {
+                        g->abstained = true;
+                        from = "abstained";
+                        jobj_set(step, "abstained", jbool(true));
+                    }
+                }
+                jobj_set(step, "veto", vj);
+            }
+        }
         if (t == 0)
             for (size_t i = 0; i < nr && g->first_alt < 0; i++)
                 if (ranked[i] != word)
@@ -1625,6 +1813,7 @@ static int gated_tries(learner_t *l, const speak_cfg_t *cfg, const char *state, 
         jobj_set(tr, "try", ju64((uint64_t)k + 1));
         jobj_set(tr, "reply", jstr(reply));
         jobj_set(tr, "accepted", jbool(!fl[ng]));
+        jobj_set(tr, "abstained", jbool(g[ng].abstained));
         jobj_set(tr, "checks", jclone(ck[ng]));
         jarr_push(*tries, tr);
         /* the try, where the harness shows it (activity.h) */
@@ -1635,6 +1824,7 @@ static int gated_tries(learner_t *l, const speak_cfg_t *cfg, const char *state, 
         jobj_set(a, "person", jstr(person));
         jobj_set(a, "reply", jstr(reply));
         jobj_set(a, "accepted", jbool(!fl[ng]));
+        jobj_set(a, "abstained", jbool(g[ng].abstained));
         jobj_set(a, "checks", jclone(ck[ng]));
         activity_append(a);
         json_free(a);
@@ -1791,7 +1981,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     /* gated (cfg.gated): MechJev's gates make every word, the replies judged
      * whole; the kept try takes the place of the step loop below */
     json_t *tries_j = NULL, *g_checks = NULL, *g_truth = NULL, *g_grammar = NULL;
-    bool g_failed = false;
+    bool g_failed = false, g_abstained = false;
     if (cfg->gated) {
         gen_t kept_try;
         if (gated_tries(l, cfg, state, person, slots, room, cap, li, heard, nh, show_w, ns_show, &pl, &kept_try,
@@ -1801,6 +1991,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
         said = kept_try.said, ex = kept_try.ex, ctxs = kept_try.ctxs, labels = kept_try.labels;
         coh = kept_try.coh, have = kept_try.have, trace = kept_try.trace;
         t = kept_try.t, words = kept_try.words, nex = kept_try.nex, ended = kept_try.ended;
+        g_abstained = kept_try.abstained;
         /* an accepted reply's words were MechJev's own and right: picked */
         for (size_t k = 0; !g_failed && cfg->learn && !cfg->alone && k < nex; k++) {
             l->v[ex[k].top].picked++;
@@ -2171,6 +2362,8 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     jobj_set(rec, "checks", checks);
     jobj_set(rec, "trace", trace);
     jobj_set(rec, "gated", jbool(cfg->gated));
+    if (cfg->gated)
+        jobj_set(rec, "abstained", jbool(g_abstained)); /* it said it does not know (gated, cfg.abstain) */
     if (tries_j)
         jobj_set(rec, "tries", tries_j); /* each try's reply and judgment, the kept one last accepted */
     *record = rec;
@@ -2544,7 +2737,16 @@ int speak_pointer_data(learner_t *l, const speak_cfg_t *cfg, const char *turns_p
                     s->ns = ns;
                     memcpy(s->said, said, ns * sizeof *said);
                     s->label = label;
-                    s->pc = learner_circuit_prob(l, s->a, label);
+                    /* The circuit as it was before it learned this turn (the
+                     * trace): today's circuit has learned these very turns, and
+                     * a fit to its probabilities taught the gate it never needs
+                     * the line (held out over 116 turns the pointer added one
+                     * word to the circuit's 76 of 149; live it said "Wet.").
+                     * Its first word then and that word's probability: the
+                     * label's if it was the label, else none. */
+                    const json_t *ct = jobj_get(st, "circuit_top1"), *cp = jobj_get(st, "circuit_p_first");
+                    s->ctop_then = ct && ct->t == J_STR ? lex_find(l, ct->s) : -1;
+                    s->pc = s->ctop_then == label ? (cp && cp->t == J_NUM ? (float)cp->f : 0.5f) : 0.0f;
                 }
                 if (t == cut)
                     break;
