@@ -306,3 +306,13 @@ stage check had judged those turns well ("Yes!" 0.02, "Know who that is."
 {check}`) and it is one more requirement of that turn: a reply it does not
 hold for is not learned as right. The record's `checks` keeps it as "The
 teacher's check: ...".
+
+**The lesson's goal in a taught turn**: with the teacher's check a
+requirement, the engine still chose "Yes." for MechJev at `unknown` ("Do
+you want the Plink?"), every such turn failed, and nothing was learned as
+right: the stage stalled. The word-choosing questions (the rerank, the
+lookahead's viability) now end, in a taught turn with a teacher's check,
+"A good reply here: <the check>", as the shown words are the answer's
+words; the engine still chooses each word among MechJev's own. The first
+taught turn with it: "What spro?" to "Do you feel the Spro?", check 0.94,
+every requirement met.

@@ -560,7 +560,8 @@ static const char *VIABILITY[] = {"no sense, or no fitting reply can follow",
                                   "a poor start: a fitting reply is unlikely from here", "a fitting reply could follow",
                                   "a good start toward a fitting reply", "the best kind of start for a fitting reply"};
 
-static json_t *viability_q(const char *so_far)
+/* hint: the lesson's goal in a taught turn (the teacher's check), NULL: none */
+static json_t *viability_q(const char *so_far, const char *hint)
 {
     sb_t ins;
     sb_init(&ins);
@@ -568,6 +569,8 @@ static json_t *viability_q(const char *so_far)
     json_quote(&ins, so_far, strlen(so_far));
     sb_puts(&ins, ". It is unfinished: more words will follow. How good a start is it for a clear, correct "
                   "English reply that answers what the person said last?");
+    if (hint && *hint)
+        sb_printf(&ins, " A good reply here: %s", hint);
     json_t *q = jobj();
     jobj_set(q, "type", jstr("score"));
     jobj_set(q, "instructions", jstr(ins.s));
@@ -716,6 +719,10 @@ static int rerank(learner_t *l, const speak_cfg_t *cfg, const char *state, char 
                       "option continues it best, as natural and correct English that answers what the "
                       "person said last? Choose " STOP_KEY " only if the reply is already complete.");
     }
+    /* a taught turn: the lesson's goal, as the shown words are its answer's
+     * words (the engine still chooses each word among MechJev's own) */
+    if (cfg->extra_check && *cfg->extra_check)
+        sb_printf(&ins, " A good reply here: %s", cfg->extra_check);
     json_t *qs = jobj();
     jobj_set(qs, "next", choice_q(ins.s, keys, no));
     sb_free(&ins);
@@ -981,7 +988,7 @@ static int lookahead(learner_t *l, const speak_cfg_t *cfg, const char *state, ch
         ptext[i] = render_words(w2, t + 1 + (ph[i] >= 0));
         char id[24];
         snprintf(id, sizeof id, "v%zu", i);
-        jobj_set(qs, id, viability_q(ptext[i]));
+        jobj_set(qs, id, viability_q(ptext[i], cfg->extra_check));
     }
     free(w2);
     if (may_stop) {
