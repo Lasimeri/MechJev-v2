@@ -36,6 +36,7 @@ void speak_cfg_default(speak_cfg_t *c)
     c->truth = true;
     c->grammar = true;
     c->persona = true; /* "No." to "Have you ever been to Zorvania?" with it, "Yes." without (speak.md) */
+    c->copy = true; /* told, judged by the teacher: 8 of 12 with it, 0 of 12 without (pointer.md) */
     c->sampling = (sampling_t){
         .temp = 0.5, .top_p = 0.95, .min_p = 0.05, .repeat_penalty = 1.2, .top_k = 75, .ties_only = true};
 }

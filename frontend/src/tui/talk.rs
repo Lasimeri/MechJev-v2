@@ -192,7 +192,9 @@ pub fn lesson_line(e: &Value) -> String {
         let passed = if e["passed"].as_bool() == Some(true) { "passed" } else { "failed" };
         format!("{check}{passed}")
     };
-    match e["mode"].as_str().unwrap_or("") {
+    // a test or an A/B (another learner than the harness's own) says which
+    let on = e["instance"].as_str().map_or(String::new(), |i| format!("on {i}: "));
+    on + &match e["mode"].as_str().unwrap_or("") {
         "promote" => format!("promoted {} -> {} ({} taught turns, {} checks)", s("from"), s("to"), e["taught"], e["checks"]),
         "stage" => format!("the ladder is at {}", s("to")),
         "measure" => format!("measured {}: \"{}\" -> \"{}\", {}", s("lesson"), s("line"), s("reply"), verdict(e)),

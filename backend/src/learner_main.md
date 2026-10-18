@@ -78,7 +78,7 @@ old one measured on them (learner.md, "Four input bits a variable").
 The other settings: `MJ2_NGRAM` (the n-gram memory's weight, 1; ngram.md),
 `MJ2_HARNESS` and `MJ2_NAME` (where and as what this learner shows in the
 TUI when it runs on another data directory; activity.md),
-`MJ2_COPY` (adaptive attention over the person's line, 0; pointer.md: fitted
+`MJ2_COPY` (adaptive attention over the person's line, 1; pointer.md: fitted
 to turns.jsonl at the start, "learner: pointer fitted to N turns, M words"),
 `MJ2_KEEP_DROP` (the coherence keeper, 0.05),
 `MJ2_LOOKAHEAD` (3), `MJ2_RECENT_SHARE` (0), the sampling settings

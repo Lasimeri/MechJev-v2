@@ -33,6 +33,7 @@ typedef struct {
     teacher_t t;
     lessons_t ls;
     char *dir, *lessons_log, *tests;
+    char *name; /* the learner taught, in the harness, when it is not the harness's own (activity.h) */
 } teach_ctx_t;
 
 static char *join(const char *a, const char *b)
@@ -73,10 +74,17 @@ static void append(const char *path, const json_t *row)
         fclose(f);
     }
     free(s);
-    /* and where the harness shows it (activity.h): every verdict, measure,
-     * promotion and stage move */
+}
+
+/* A row onto lessons.jsonl, and where the harness shows it (activity.h):
+ * every verdict, measure, promotion and stage move, labelled with the
+ * learner taught when it is not the harness's own (a test, an A/B). */
+static void log_row(const teach_ctx_t *c, const json_t *row)
+{
+    append(c->lessons_log, row);
     json_t *e = jclone(row);
     jobj_set(e, "kind", jstr("lesson"));
+    jobj_set(e, "instance", c->name ? jstr(c->name) : jnull());
     activity_append(e);
     json_free(e);
 }
@@ -234,7 +242,7 @@ static int cmd_measure(teach_ctx_t *c, int repeats)
                 jobj_set(row, "time", jstr(when));
                 jobj_set(row, "lesson", jstr(l->name));
                 jobj_set(row, "mode", jstr("measure"));
-                append(c->lessons_log, row);
+                log_row(c, row);
                 printf("measured %s: \"%s\" -> \"%s\" %s (check %.2f)\n", l->name, str(row, "line"),
                        str(row, "reply"), boolean(row, "passed") ? "PASS" : "fail", jobj_get(row, "check")->f);
                 fflush(stdout);
@@ -547,7 +555,7 @@ static int ladder_step(teach_ctx_t *c, char *err, size_t errlen)
     bool passed = boolean(row, "passed");
     printf("  MechJev%s: \"%s\" check %.2f, requirements %s: %s\n", check ? " alone" : "", str(row, "reply"),
            jobj_get(row, "check")->f, boolean(row, "requirements") ? "met" : "failed", passed ? "PASS" : "fail");
-    append(c->lessons_log, row);
+    log_row(c, row);
     json_free(row);
     if (check) {
         if (ld.nlast == 3) {
@@ -564,7 +572,7 @@ static int ladder_step(teach_ctx_t *c, char *err, size_t errlen)
                 jobj_set(p, "to", jstr(c->ls.v[ld.stage + 1].name));
                 jobj_set(p, "taught", ju64(ld.taught));
                 jobj_set(p, "checks", ju64(ld.nchecks + 1));
-                append(c->lessons_log, p);
+                log_row(c, p);
                 json_free(p);
                 printf("  promoted: %s -> %s (after %zu taught turns, %zu checks)\n", l->name,
                        c->ls.v[ld.stage + 1].name, ld.taught, ld.nchecks + 1);
@@ -604,7 +612,7 @@ static int cmd_stage(teach_ctx_t *c, const char *name)
     jobj_set(r, "time", jstr(when));
     jobj_set(r, "mode", jstr("stage"));
     jobj_set(r, "to", jstr(name));
-    append(c->lessons_log, r);
+    log_row(c, r);
     json_free(r);
     printf("the ladder is at %s\n", name);
     return 0;
@@ -668,6 +676,19 @@ int main(int argc, char **argv)
     memset(&c, 0, sizeof c);
     c.t.engine = conf_get("MJ2_ENGINE", conf_get("XKS_BIND", "127.0.0.1:8090"));
     c.t.learner = conf_get("MJ2_BIND", "127.0.0.1:8092");
+    {
+        char *h = harness_dir();
+        const char *nm = getenv("MJ2_NAME"), *base = strrchr(c.dir, '/');
+        if (nm && *nm)
+            c.name = xstrdup(nm);
+        else if (strcmp(h, c.dir)) {
+            sb_t b;
+            sb_init(&b);
+            sb_printf(&b, "%s %s", base ? base + 1 : c.dir, c.t.learner);
+            c.name = sb_take(&b);
+        }
+        free(h);
+    }
     c.dir = data_dir();
     c.lessons_log = join(c.dir, "lessons.jsonl");
     /* the TUI to type into, as a person would: MJEV2_PANE (jev2.0); empty:
@@ -710,6 +731,7 @@ int main(int argc, char **argv)
     lessons_free(&c.ls);
     free(c.dir);
     free(c.lessons_log);
+    free(c.name);
     free(c.tests);
     free(turns);
     return rc;

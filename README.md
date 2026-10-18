@@ -154,7 +154,7 @@ Qwen writes. `mjev2 teach [N]` starts the engine and MechJev first.
 | `MJ2_KEEP_DROP` | `0.05` | the coherence keeper: how far below its best sentence end a reply may fall (below 0: off) |
 | `MJ2_MEMORY` | `0` | the fast memory's weight in a word's score (0: it learns but does not speak) |
 | `MJ2_NGRAM` | `1` | the meaning-gated n-gram memory's weight (times its gate); 0: it learns, silent (backend/src/ngram.md) |
-| `MJ2_COPY` | `0` | adaptive attention over the person's line: a sentinel-gated pointer that may name a word of the line MechJev never said, in a turn it answers alone (backend/src/pointer.md) |
+| `MJ2_COPY` | `1` | adaptive attention over the person's line: a sentinel-gated pointer that may name a word of the line MechJev never said, in a turn it answers alone; 0 off (backend/src/pointer.md) |
 | `MJ2_TRUTH` | `1` | judge the truth: no fact it was not told, no experience it could not have had; opinions free (speak.md); 0 off |
 | `MJ2_GRAMMAR` | `1` | judge the grammar: no sentence without its subject, none broken (speak.md); 0 off |
 | `MJ2_PHRASES` | `0` | the lookahead judges two-word phrases (measured worse and slower; speak.md) |

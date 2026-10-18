@@ -61,7 +61,9 @@ through `/v1/hear` are missed), each learned word with the circuit's output
 bits for it now and the slots, 25 passes in order at learning rate 0.05,
 L2 1e-4 (1e-3 on the meaning weights), starting
 with `B0 = 2` (trust the circuit) and a new word drawing the attention a
-little (`W0[0] = 1`). Off unless `MJ2_COPY=1`.
+little (`W0[0] = 1`). It is fitted again the same way after every passed
+taught turn (37 ms at 88 turns, 313 words), so it adapts as it is taught
+and is the same as after a start. On by default; `MJ2_COPY=0` turns it off.
 
 ## Measured
 
@@ -112,3 +114,26 @@ opens at 0.02 for its second. (A first version of the toy gave the two
 meanings different circuit bits too; the gate then learned the meaning
 through where the attention landed, and failed when asked with the other
 bits.)
+
+**Judged by the teacher** (2026-10-18, live, the decision to switch it
+on). Two learners on copies of the same snapshot, one with the pointer
+(:8093), one without (:8094); `teacher measure` (a probe, then the
+teacher's own check against the told stage's goal) over 8 told lines, 3
+rounds interleaved, `~/.cache/mechjev-v2-ab-teacher/`:
+
+| the told line | passed, with | passed, without |
+| --- | --- | --- |
+| "The box is big. Is the box big?" (4 lines) | 8 of 12 | 0 of 12 |
+| "The leaf is green. What color is the leaf?" (4 lines) | 3 of 12 | 3 of 12 |
+
+Without it, MechJev said "Green!" to nearly everything. With it, the
+asked-back form answers with the told word ("Round!", "Big!", "Hot!",
+"Long."); two of the misses were the told word with the requirements
+failed. The what-color form ties: the pointer copies the noun ("Sky.",
+"Snow!"), nothing in its features says "the word the first sentence gave
+the thing" (both pass only on leaf, "Green.", the circuit's word).
+
+Live probes before it, 8 lines twice (`~/.cache/mechjev-v2-ptr-live3/`):
+the pointer named nothing on the 24 fixed probes; it parroted unknown
+words at the first word ("Do you know the Zin?" -> "Zin!", where the 9
+passed unknown turns all said "What ...?" first).
