@@ -1381,10 +1381,13 @@ static int judge_teacher_check(const speak_cfg_t *cfg, const char *person, const
  * the one-word stages' 0.6 left it saying "What day?"); only as the first word:
  * later it let "my" end "My day is going my." */
 #define COHERENCE_FLOOR_SHOWN 0.5
+#define SPAN_MAX 12 /* the teacher's words a span try may say */
 
 typedef struct {
     int32_t first;   /* the first word, -1: the gates' own */
     bool short_form; /* after the first word only a sentence's end, then the end */
+    const int32_t *seq; /* the whole reply, said as it is, then "." and the end (the shown words' span) */
+    size_t nseq;
 } plan_t;
 
 typedef struct {
@@ -1522,6 +1525,9 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
             else
                 word = end;
             from = "abstained";
+        } else if (plan.seq) { /* the teacher's words, as they were shown */
+            word = t < plan.nseq ? plan.seq[t] : t == plan.nseq ? lex_find(l, ".") : end;
+            from = "shown";
         } else if (t == 0 && plan.first >= 0)
             word = plan.first, from = "tried";
         else if (plan.short_form && t == 1) {
@@ -1827,6 +1833,55 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
     return 0;
 }
 
+/* A try onto the turn's record (tries) and where the harness shows it
+ * (activity.h). */
+static void log_try(const speak_cfg_t *cfg, json_t *tries, const char *person, size_t k, const char *reply,
+                    bool accepted, bool abstained, const json_t *checks)
+{
+    json_t *tr = jobj();
+    jobj_set(tr, "try", ju64((uint64_t)k));
+    jobj_set(tr, "reply", jstr(reply));
+    jobj_set(tr, "accepted", jbool(accepted));
+    jobj_set(tr, "abstained", jbool(abstained));
+    jobj_set(tr, "checks", jclone(checks));
+    jarr_push(tries, tr);
+    json_t *a = jobj();
+    jobj_set(a, "kind", jstr("try"));
+    jobj_set(a, "instance", cfg->instance ? jstr(cfg->instance) : jnull());
+    jobj_set(a, "try", ju64((uint64_t)k));
+    jobj_set(a, "person", jstr(person));
+    jobj_set(a, "reply", jstr(reply));
+    jobj_set(a, "accepted", jbool(accepted));
+    jobj_set(a, "abstained", jbool(abstained));
+    jobj_set(a, "checks", jclone(checks));
+    activity_append(a);
+    json_free(a);
+}
+
+/* A reply judged whole, as a turn is: the requirements (judge_reply) and,
+ * in a taught turn, the stage check in the teacher's framing; *failed when
+ * either fails. The checks into *checks, the truth and grammar parts too. */
+static void judge_whole(const speak_cfg_t *cfg, const char *state, const char *person, const char *reply,
+                        cost_t *cost, bool *failed, json_t **checks, json_t **truth_j, json_t **grammar_j, char *err,
+                        size_t errlen)
+{
+    *checks = jobj();
+    *truth_j = jnull();
+    *grammar_j = jnull();
+    *failed = false;
+    judge_reply(cfg, state, reply, cost, failed, *checks, truth_j, grammar_j, err, errlen);
+    if (*reply && cfg->extra_check && *cfg->extra_check) {
+        double tp = 0;
+        bool ok = !judge_teacher_check(cfg, person, reply, cost, &tp, err, errlen) && tp >= 0.5;
+        *failed |= !ok;
+        sb_t kk;
+        sb_init(&kk);
+        sb_printf(&kk, "The teacher's check: %s", cfg->extra_check);
+        jobj_set(*checks, kk.s, jf64(tp));
+        sb_free(&kk);
+    }
+}
+
 /* A taught turn by gates: up to GATED_TRIES replies, each judged whole as a
  * turn is (the requirements, and the stage check in the teacher's framing),
  * the first accepted kept, never the best scored. The tries: the gates'
@@ -1844,14 +1899,14 @@ static int gated_tries(learner_t *l, const speak_cfg_t *cfg, const char *state, 
                        json_t **truth_j, json_t **grammar_j, bool *failed, json_t **tries, cost_t *cost, char *err,
                        size_t errlen)
 {
-    gen_t g[GATED_TRIES];
-    json_t *ck[GATED_TRIES], *tj[GATED_TRIES], *gj[GATED_TRIES];
-    bool fl[GATED_TRIES];
+    gen_t g[GATED_TRIES + 1];
+    json_t *ck[GATED_TRIES + 1], *tj[GATED_TRIES + 1], *gj[GATED_TRIES + 1];
+    bool fl[GATED_TRIES + 1];
     int ng = 0, accepted = -1;
     size_t ntries = cfg->alone || cfg->probe || !cfg->learn ? 1 : GATED_TRIES;
     *tries = jarr();
     for (size_t k = 0; k < ntries && accepted < 0; k++) {
-        plan_t plan = {-1, false};
+        plan_t plan = {-1, false, NULL, 0};
         if (k == 1) {
             if (!ng || g[0].t <= 2) /* the gates' reply was a word and a mark already */
                 continue;
@@ -1886,44 +1941,60 @@ static int gated_tries(learner_t *l, const speak_cfg_t *cfg, const char *state, 
             return -1;
         }
         char *reply = render_words(l, g[ng].said, g[ng].t);
-        ck[ng] = jobj();
-        tj[ng] = jnull();
-        gj[ng] = jnull();
-        fl[ng] = false;
-        judge_reply(cfg, state, reply, cost, &fl[ng], ck[ng], &tj[ng], &gj[ng], err, errlen);
-        if (*reply && cfg->extra_check && *cfg->extra_check) {
-            double tp = 0;
-            bool ok = !judge_teacher_check(cfg, person, reply, cost, &tp, err, errlen) && tp >= 0.5;
-            fl[ng] |= !ok;
-            sb_t kk;
-            sb_init(&kk);
-            sb_printf(&kk, "The teacher's check: %s", cfg->extra_check);
-            jobj_set(ck[ng], kk.s, jf64(tp));
-            sb_free(&kk);
-        }
-        json_t *tr = jobj();
-        jobj_set(tr, "try", ju64((uint64_t)k + 1));
-        jobj_set(tr, "reply", jstr(reply));
-        jobj_set(tr, "accepted", jbool(!fl[ng]));
-        jobj_set(tr, "abstained", jbool(g[ng].abstained));
-        jobj_set(tr, "checks", jclone(ck[ng]));
-        jarr_push(*tries, tr);
-        /* the try, where the harness shows it (activity.h) */
-        json_t *a = jobj();
-        jobj_set(a, "kind", jstr("try"));
-        jobj_set(a, "instance", cfg->instance ? jstr(cfg->instance) : jnull());
-        jobj_set(a, "try", ju64((uint64_t)k + 1));
-        jobj_set(a, "person", jstr(person));
-        jobj_set(a, "reply", jstr(reply));
-        jobj_set(a, "accepted", jbool(!fl[ng]));
-        jobj_set(a, "abstained", jbool(g[ng].abstained));
-        jobj_set(a, "checks", jclone(ck[ng]));
-        activity_append(a);
-        json_free(a);
+        judge_whole(cfg, state, person, reply, cost, &fl[ng], &ck[ng], &tj[ng], &gj[ng], err, errlen);
+        log_try(cfg, *tries, person, k + 1, reply, !fl[ng], g[ng].abstained, ck[ng]);
         free(reply);
         if (!fl[ng])
             accepted = ng;
         ng++;
+    }
+    /* Every try rejected, in a taught turn: the teacher's own words, as it
+     * showed them, their beginnings judged whole, the shortest first ("I do
+     * not know." for the unknown stage, "My day was good." for the day; word
+     * by word the gates' tries had ended at "I." and "My."), as a child
+     * repeats what it was shown. The first accepted is said, so its words are
+     * learned with what MechJev saw at each. */
+    if (accepted < 0 && ntries > 1 && show_w && ns_show) {
+        int32_t seq[SPAN_MAX];
+        size_t n = 0;
+        for (size_t i = 0; i < ns_show && n < SPAN_MAX; i++) {
+            int32_t w = lex_find(l, show_w[i]);
+            if (w >= 0 && !is_punct(show_w[i]))
+                seq[n++] = w;
+        }
+        char **words = xmalloc((n + 2) * sizeof *words);
+        for (size_t len = 1; len <= n && accepted < 0; len++) {
+            for (size_t i = 0; i < len; i++)
+                words[i] = l->v[seq[i]].word;
+            words[len] = ".";
+            char *reply = render_words(l, words, len + 1);
+            bool f;
+            json_t *ckx, *tjx, *gjx;
+            judge_whole(cfg, state, person, reply, cost, &f, &ckx, &tjx, &gjx, err, errlen);
+            log_try(cfg, *tries, person, GATED_TRIES + len, reply, !f, false, ckx);
+            free(reply);
+            if (f) {
+                json_free(ckx), json_free(tjx), json_free(gjx);
+                continue;
+            }
+            /* said as accepted: generated so, its examples carry what it saw */
+            plan_t plan = {-1, false, seq, len};
+            gen_init(&g[ng], room);
+            if (gated_generate(l, cfg, state, slots0, room, cap, li, heard, nh, NULL, 0, pl, plan, &g[ng], cost, err,
+                               errlen)) {
+                json_free(ckx), json_free(tjx), json_free(gjx);
+                free(words);
+                for (int r = 0; r <= ng; r++)
+                    gen_free(&g[r]);
+                for (int r = 0; r < ng; r++)
+                    json_free(ck[r]), json_free(tj[r]), json_free(gj[r]);
+                json_free(*tries);
+                return -1;
+            }
+            ck[ng] = ckx, tj[ng] = tjx, gj[ng] = gjx, fl[ng] = false;
+            accepted = ng++;
+        }
+        free(words);
     }
     int c = accepted >= 0 ? accepted : 0;
     /* the word each rejected try said where it first parts from the kept one */
