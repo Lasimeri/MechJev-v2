@@ -25,6 +25,7 @@
 
 #define RECENT_LINES 8   /* the teacher's own lines it is shown, so it does not loop */
 #define REWRITES 4       /* a line that is a test line or a repeat is written again */
+#define NEAR 0.75        /* a line sharing this share of its words with one said is a near-repeat (teach.h) */
 
 typedef struct {
     teacher_t t;
@@ -283,7 +284,7 @@ static char *recent_lines(teach_ctx_t *c, json_t *avoid)
  * line is pushed to `avoid`. */
 static int next_line(teach_ctx_t *c, const lesson_t *l, const char *goal, const json_t *tests, const char *recent,
                      json_t *avoid,
-                     const char *exchanges, char **line, char *err, size_t errlen)
+                     const char *exchanges, json_t *refused, char **line, char *err, size_t errlen)
 {
     sb_t ctx;
     sb_init(&ctx);
@@ -292,28 +293,63 @@ static int next_line(teach_ctx_t *c, const lesson_t *l, const char *goal, const 
     if (recent && *recent)
         sb_printf(&ctx, "%s%s", ctx.n ? "\n\n" : "", recent);
     *line = NULL;
+    char *near = NULL; /* the last near-repeat: said only when every rewrite was one */
     for (int k = 0; k < REWRITES; k++) {
         free(*line);
         *line = NULL;
         if (teacher_write(&c->t, goal, ctx.s, line, err, errlen)) {
+            free(near);
             sb_free(&ctx);
             return -1;
         }
         bool again = is_test_line(tests, *line);
         for (size_t s = 0; s < avoid->n && !again; s++)
             again = teacher_same_text(avoid->items[s]->s, *line);
-        if (!again) {
+        double most = 0;
+        const char *like = NULL;
+        for (size_t s = 0; s < avoid->n && !again; s++) {
+            double o = teacher_word_overlap(avoid->items[s]->s, *line);
+            if (teacher_words_inside(avoid->items[s]->s, *line))
+                o = 1; /* a line within a line said, or one said within it */
+            if (o > most) {
+                most = o;
+                like = avoid->items[s]->s;
+            }
+        }
+        if (!again && most < NEAR) {
+            free(near);
             jarr_push(avoid, jstr(*line));
             sb_free(&ctx);
             return 0;
         }
-        sb_printf(&ctx, "%sNot \"%s\": you have said that already.", ctx.n ? "\n\n" : "", *line);
+        if (refused) { /* for the row: what Qwen wrote and why it was not said */
+            json_t *x = jobj();
+            jobj_set(x, "line", jstr(*line));
+            jobj_set(x, "why", jstr(again ? "said already, or a test line" : "a near-repeat"));
+            if (!again)
+                jobj_set(x, "of", jstr(like));
+            jarr_push(refused, x);
+        }
+        if (again)
+            sb_printf(&ctx, "%sNot \"%s\": you have said that already.", ctx.n ? "\n\n" : "", *line);
+        else {
+            free(near);
+            near = xstrdup(*line);
+            sb_printf(&ctx, "%sNot \"%s\": it is nearly \"%s\", which you have said. Say something new.",
+                      ctx.n ? "\n\n" : "", *line, like);
+        }
+    }
+    sb_free(&ctx);
+    if (near) { /* nothing new but near-repeats: the last of them, not a failed turn */
+        free(*line);
+        *line = near;
+        jarr_push(avoid, jstr(*line));
+        return 0;
     }
     snprintf(err, errlen, "the teacher wrote %d lines for %s and each was a repeat or a test line (last: \"%s\")",
              REWRITES, l->name, *line);
     free(*line);
     *line = NULL;
-    sb_free(&ctx);
     return -1;
 }
 
@@ -412,16 +448,20 @@ static int ladder_step(teach_ctx_t *c, char *err, size_t errlen)
     json_t *tests = tests_load(c), *avoid = jarr();
     char *recent = recent_lines(c, avoid);
     char *line = NULL;
-    int rc = next_line(c, l, goal, tests, recent, avoid, ld.exchanges, &line, err, errlen);
+    json_t *refused = jarr(); /* the lines Qwen wrote that were not said */
+    int rc = next_line(c, l, goal, tests, recent, avoid, ld.exchanges, refused, &line, err, errlen);
     free(recent);
     json_free(avoid);
     json_free(tests);
     if (rc) {
         free(ld.exchanges);
+        json_free(refused);
         return -1;
     }
     printf("stage %zu/%zu %s, %s: Qwen says \"%s\"\n", ld.stage + 1, c->ls.n, l->name,
            check ? "a check of MechJev alone" : "taught", line);
+    for (size_t i = 0; i < refused->n; i++)
+        printf("  (refused first: \"%s\", %s)\n", str(refused->items[i], "line"), str(refused->items[i], "why"));
     fflush(stdout);
     json_t *row = NULL;
     if (check)
@@ -449,14 +489,17 @@ static int ladder_step(teach_ctx_t *c, char *err, size_t errlen)
     }
     free(line);
     free(ld.exchanges);
-    if (rc)
+    if (rc) {
+        json_free(refused);
         return -1;
+    }
     char when[32];
     stamp(when, sizeof when);
     jobj_set(row, "time", jstr(when));
     jobj_set(row, "lesson", jstr(l->name));
     jobj_set(row, "stage", ju64(ld.stage + 1));
     jobj_set(row, "mode", jstr(check ? "check" : "taught"));
+    jobj_set(row, "refused", refused); /* the row owns it now */
     bool passed = boolean(row, "passed");
     printf("  MechJev%s: \"%s\" check %.2f, requirements %s: %s\n", check ? " alone" : "", str(row, "reply"),
            jobj_get(row, "check")->f, boolean(row, "requirements") ? "met" : "failed", passed ? "PASS" : "fail");

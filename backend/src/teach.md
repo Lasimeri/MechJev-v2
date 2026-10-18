@@ -65,7 +65,16 @@ The learner's name, for the name stages, is MechJev (the user's).
    user's sampling settings (engine.md); the first line, quotation marks
    taken off. A line that is a test line or one it has said already
    (marks, spaces and case aside) is written again, the refused lines shown
-   to it, 4 times at most. The user's ask that made this: "Stop the Qwen
+   to it, 4 times at most; so is a near-repeat, a line sharing 0.75 or more
+   of its words with one said (`teacher_word_overlap`: "How are you
+   today?" against "How are you?" 0.833, against "How are you feeling
+   today?" 0.857; "Are you okay?" against "How are you today?" 0.375),
+   or a line whose words all lie in a said line's (or a said line's in
+   its: "How are you today?" inside "Hi MechJev. How are you today?",
+   overlap 0.667), unless every rewrite was one, when the last is said
+   rather than none. Each row keeps the lines refused and why (`refused`),
+   and the teacher prints them.
+   The user's ask that made this: "Stop the Qwen
    model from looping when teaching MechJev": one line had been typed for
    every try and demonstration of a lesson, 4 times in the greet lesson.
 4. **Typed in the TUI** (`teacher_say_in_tui`), as the user asked: "The

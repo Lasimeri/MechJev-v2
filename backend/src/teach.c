@@ -257,6 +257,66 @@ bool teacher_same_text(const char *a, const char *b)
     }
 }
 
+/* The distinct words of s, lower case (letters, digits, apostrophes), at
+ * most max of them; how many. */
+static size_t word_set(const char *s, char words[][32], size_t max)
+{
+    size_t n = 0;
+    while (*s && n < max) {
+        while (*s && !isalnum((unsigned char)*s))
+            s++;
+        if (!*s)
+            break;
+        char w[32];
+        size_t k = 0;
+        while (*s && (isalnum((unsigned char)*s) || *s == '\'')) {
+            if (k + 1 < sizeof w)
+                w[k++] = (char)tolower((unsigned char)*s);
+            s++;
+        }
+        w[k] = 0;
+        bool seen = false;
+        for (size_t i = 0; i < n && !seen; i++)
+            seen = !strcmp(words[i], w);
+        if (!seen)
+            memcpy(words[n++], w, k + 1);
+    }
+    return n;
+}
+
+double teacher_word_overlap(const char *a, const char *b)
+{
+    char wa[64][32], wb[64][32];
+    size_t na = word_set(a, wa, 64), nb = word_set(b, wb, 64), both = 0;
+    for (size_t i = 0; i < na; i++)
+        for (size_t j = 0; j < nb; j++)
+            if (!strcmp(wa[i], wb[j])) {
+                both++;
+                break;
+            }
+    size_t either = na + nb - both;
+    return either ? (double)both / (double)either : 1.0;
+}
+
+bool teacher_words_inside(const char *a, const char *b)
+{
+    char wa[64][32], wb[64][32];
+    size_t na = word_set(a, wa, 64), nb = word_set(b, wb, 64);
+    if (!na || !nb)
+        return false;
+    bool a_small = na <= nb;
+    char (*s)[32] = a_small ? wa : wb, (*g)[32] = a_small ? wb : wa;
+    size_t ns = a_small ? na : nb, ng = a_small ? nb : na;
+    for (size_t i = 0; i < ns; i++) {
+        bool found = false;
+        for (size_t j = 0; j < ng && !found; j++)
+            found = !strcmp(s[i], g[j]);
+        if (!found)
+            return false;
+    }
+    return true;
+}
+
 /* ---- typing in the TUI ------------------------------------------------- */
 
 /* tmux with these arguments (no shell: a line is passed as it is); its

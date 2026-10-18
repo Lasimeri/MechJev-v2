@@ -78,4 +78,14 @@ int teacher_say_in_tui(const teacher_t *t, const char *line, bool alone, const c
 /* Two lines the same but for marks, spaces and case. */
 bool teacher_same_text(const char *a, const char *b);
 
+/* The share of words two lines have in common, of all the words either has
+ * (case and marks aside): 1 the same words, 0 none shared. "Hi MechJev. How
+ * are you today?" and "Hi MechJev. How are you?" share 5 of 6: 0.83. */
+double teacher_word_overlap(const char *a, const char *b);
+
+/* Every word of the shorter line in the longer one (case and marks aside):
+ * "How are you today?" is inside "Hi MechJev. How are you today?" (its
+ * overlap only 0.667). */
+bool teacher_words_inside(const char *a, const char *b);
+
 #endif
