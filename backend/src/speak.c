@@ -1211,7 +1211,7 @@ static void judge_reply(const speak_cfg_t *cfg, const char *state, const char *r
                         json_t *checks, json_t **truth_j, json_t **grammar_j, char *err, size_t errlen)
 {
     bool failed = !*reply;
-    if (*reply && (cfg->nchecks || cfg->truth || cfg->grammar || (cfg->extra_check && *cfg->extra_check))) {
+    if (*reply && (cfg->nchecks || cfg->truth || cfg->grammar)) {
         sb_t s2;
         sb_init(&s2);
         /* The reply judged by name: the conversation holds earlier "Reply:"
@@ -1248,16 +1248,6 @@ static void judge_reply(const speak_cfg_t *cfg, const char *state, const char *r
             snprintf(id, sizeof id, "t%zu", i);
             jobj_set(cq, id, q);
         }
-        if (cfg->extra_check && *cfg->extra_check) { /* the teacher's stage check (teach.md) */
-            json_t *q = jobj();
-            jobj_set(q, "type", jstr("noul"));
-            sb_t ci;
-            sb_init(&ci);
-            sb_printf(&ci, "About the newest reply only: %s", cfg->extra_check);
-            jobj_set(q, "instructions", jstr(ci.s));
-            sb_free(&ci);
-            jobj_set(cq, "x0", q);
-        }
         for (size_t i = 0; cfg->grammar && i < 2; i++) { /* grammar, two statements (GRAMMAR) */
             json_t *q = jobj();
             jobj_set(q, "type", jstr("noul"));
@@ -1280,16 +1270,6 @@ static void judge_reply(const speak_cfg_t *cfg, const char *state, const char *r
             double p = v && v->t == J_NUM ? v->f : 0;
             failed |= p < 0.5;
             jobj_set(checks, cfg->checks[i], jf64(p));
-        }
-        if (a2 && cfg->extra_check && *cfg->extra_check) {
-            json_t *v = jobj_get(jobj_get(a2, "x0"), "noul");
-            double p = v && v->t == J_NUM ? v->f : 0;
-            failed |= p < 0.5;
-            sb_t k;
-            sb_init(&k);
-            sb_printf(&k, "The teacher's check: %s", cfg->extra_check);
-            jobj_set(checks, k.s, jf64(p));
-            sb_free(&k);
         }
         if (a2 && cfg->grammar) {
             double gp[2];
@@ -1336,6 +1316,39 @@ static void judge_reply(const speak_cfg_t *cfg, const char *state, const char *r
             failed = true;
     }
     *failed_out = failed;
+}
+
+/* The teacher's stage check of a taught turn, judged as the teacher judges
+ * it (teach.c teacher_check: the person's line and the reply, no history,
+ * no persona), its own request: in the turn's framing "Hot!" to "The ice is
+ * cold. Is the fire hot?" passed it while the teacher gave 0.18, and the
+ * reply was learned as right (2026-10-18). -1 if the engine did not answer. */
+static int judge_teacher_check(const speak_cfg_t *cfg, const char *person, const char *reply, cost_t *cost,
+                               double *p, char *err, size_t errlen)
+{
+    sb_t st;
+    sb_init(&st);
+    sb_printf(&st, "A conversation in English.\nPerson: %s\n\nThe newest reply, the one to judge: ", person);
+    json_quote(&st, reply, strlen(reply));
+    sb_t ci;
+    sb_init(&ci);
+    sb_printf(&ci, "About the newest reply only: %s", cfg->extra_check);
+    json_t *q = jobj(), *qs = jobj();
+    jobj_set(q, "type", jstr("noul"));
+    jobj_set(q, "instructions", jstr(ci.s));
+    sb_free(&ci);
+    jobj_set(qs, "check", q);
+    json_t *resp = NULL;
+    json_t *ans = ask(cfg, st.s, qs, &resp, cost, err, errlen);
+    sb_free(&st);
+    if (!ans) {
+        json_free(resp);
+        return -1;
+    }
+    const json_t *v = jobj_get(jobj_get(ans, "check"), "noul");
+    *p = v && v->t == J_NUM ? v->f : 0;
+    json_free(resp);
+    return 0;
 }
 
 int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *person, char **reply,
@@ -1689,6 +1702,16 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
     json_t *checks = jobj(), *truth_j = jnull(), *grammar_j = jnull();
     bool failed = false;
     judge_reply(cfg, state, *reply, &cost, &failed, checks, &truth_j, &grammar_j, err, errlen);
+    if (*reply && cfg->extra_check && *cfg->extra_check) {
+        double tp = 0;
+        bool ok = !judge_teacher_check(cfg, person, *reply, &cost, &tp, err, errlen) && tp >= 0.5;
+        failed |= !ok;
+        sb_t k;
+        sb_init(&k);
+        sb_printf(&k, "The teacher's check: %s", cfg->extra_check);
+        jobj_set(checks, k.s, jf64(tp));
+        sb_free(&k);
+    }
     for (size_t i = 0; i < nex; i++)
         ex[i].failed = failed;
 
