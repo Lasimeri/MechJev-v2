@@ -1377,7 +1377,8 @@ static int judge_teacher_check(const speak_cfg_t *cfg, const char *person, const
 /* the teacher's own words in a taught turn (show): the stage's words, little
  * risk of a habit word, and the first word of a sentence comes only to "a
  * fitting reply could follow" (0.5: "My" 0.53 for "My day was good.", where
- * the one-word stages' 0.6 left it saying "What day?") */
+ * the one-word stages' 0.6 left it saying "What day?"); only as the first word:
+ * later it let "my" end "My day is going my." */
 #define COHERENCE_FLOOR_SHOWN 0.5
 
 typedef struct {
@@ -1713,8 +1714,8 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
                         if (!dup)
                             shown[nsw++] = w;
                     }
-                    int c3 = first_coherent(l, cfg, state, g->said, t, shown, nsw, "shown", COHERENCE_FLOOR_SHOWN, vj, cost,
-                                            err, errlen);
+                    double fl = t ? COHERENCE_FLOOR : COHERENCE_FLOOR_SHOWN;
+                    int c3 = first_coherent(l, cfg, state, g->said, t, shown, nsw, "shown", fl, vj, cost, err, errlen);
                     if (c3 == -2) {
                         json_free(vj);
                         json_free(step);
