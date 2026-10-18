@@ -928,7 +928,7 @@ static size_t phrases(learner_t *l, const speak_cfg_t *cfg, const char *state, c
 }
 
 static int lookahead(learner_t *l, const speak_cfg_t *cfg, const char *state, char **said, size_t t,
-                     step_t *st, json_t *seen, cost_t *cost, char *err, size_t errlen)
+                     step_t *st, char **heard, size_t nh, json_t *seen, cost_t *cost, char *err, size_t errlen)
 {
     if (!cfg->lookahead || !st->n)
         return 0;
@@ -952,6 +952,21 @@ static int lookahead(learner_t *l, const speak_cfg_t *cfg, const char *state, ch
     for (size_t i = 0; i < st->n && nc < cfg->lookahead; i++)
         if (strcmp(l->v[st->opt[idx[i]]].word, END))
             cand[nc++] = st->opt[idx[i]];
+    /* The person's own words of this line, wherever the rerank put them: "What
+     * blix" (0.05) never reached the three judged, and "What fren", a word
+     * from an older line, was said (2026-10-18). Judged, not forced. */
+    for (size_t i = 0; i < st->n && nc < MAX_OPTS; i++) {
+        const char *w = l->v[st->opt[i]].word;
+        bool theirs = false, have = false;
+        for (size_t h = 0; h < nh && !theirs; h++)
+            theirs = !is_punct(heard[h]) && !strcmp(heard[h], w);
+        for (size_t s = 0; s < t && theirs; s++)
+            theirs = strcmp(said[s], w) != 0; /* not one already said */
+        for (size_t k = 0; k < nc && !have; k++)
+            have = cand[k] == st->opt[i];
+        if (theirs && !have && strcmp(w, END))
+            cand[nc++] = st->opt[i];
+    }
     /* At the first word the rerank judges single words blind ("I" 0.01 against
      * "Who" 0.37 to "Do you know the Plink?", 2026-10-17): the starters a
      * sentence most often begins with are judged as starts too, whatever the
@@ -1532,7 +1547,7 @@ int speak_turn(learner_t *l, const speak_cfg_t *cfg, history_t *h, const char *p
             }
             int32_t rerank_top = st.top;
             json_t *look = jobj();
-            if (lookahead(l, cfg, state, said, t, &st, look, &cost, err, errlen)) {
+            if (lookahead(l, cfg, state, said, t, &st, heard, nh, look, &cost, err, errlen)) {
                 json_free(look);
                 json_free(step);
                 json_free(step_vars);
