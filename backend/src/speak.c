@@ -1968,6 +1968,16 @@ static int gated_tries(learner_t *l, const speak_cfg_t *cfg, const char *state, 
                 words[i] = l->v[seq[i]].word;
             words[len] = ".";
             char *reply = render_words(l, words, len + 1);
+            /* a reply a try said already was judged already ("I." twice) */
+            bool seen = false;
+            for (size_t r = 0; r < (*tries)->n && !seen; r++) {
+                const json_t *rj = jobj_get((*tries)->items[r], "reply");
+                seen = rj && rj->t == J_STR && !strcmp(rj->s, reply);
+            }
+            if (seen) {
+                free(reply);
+                continue;
+            }
             bool f;
             json_t *ckx, *tjx, *gjx;
             judge_whole(cfg, state, person, reply, cost, &f, &ckx, &tjx, &gjx, err, errlen);
