@@ -1605,14 +1605,17 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
             bool ask_ends = show_w && ns_show, may_end = false;
             for (size_t i = 0; ask_ends && i < no; i++)
                 may_end |= t > 0 && (order[i] == end || sentence_end(l->v[order[i]].word));
-            bool ends_first = is_punct(l->v[word].word) || word == end;
-            if (cfg->veto && (ask_ends ? !(ends_first && !sentence_end(l->v[word].word) && word != end) : !ends_first)) {
+            /* a sentence's end or the end: passed unasked alone, judged by completeness
+             * in a taught turn; a comma is judged as a word is (passed unasked it
+             * came before an abstention's end: "My,.", "Day,.") */
+            bool ends_first = word == end || sentence_end(l->v[word].word);
+            if (cfg->veto && (ask_ends || !ends_first)) {
                 char **w2 = xmalloc((t + 2) * sizeof *w2);
                 for (size_t j = 0; j < t; j++)
                     w2[j] = g->said[j];
                 json_t *vq = jobj();
                 for (size_t i = 0; i < no; i++) {
-                    if (is_punct(l->v[order[i]].word) || order[i] == end)
+                    if (order[i] == end || sentence_end(l->v[order[i]].word))
                         continue;
                     w2[t] = l->v[order[i]].word;
                     char *text = render_words(l, w2, t + 1), id[16];
@@ -1641,12 +1644,11 @@ static int gated_generate(learner_t *l, const speak_cfg_t *cfg, const char *stat
                     snprintf(id, sizeof id, "v%zu", i);
                     const json_t *a = jobj_get(vans, id);
                     bool ends = order[i] == end || sentence_end(l->v[order[i]].word);
-                    bool mark = is_punct(l->v[order[i]].word) || order[i] == end;
-                    double v = ends ? complete : mark ? 1 : level_of(a, sizeof VIABILITY / sizeof *VIABILITY);
+                    double v = ends ? complete : level_of(a, sizeof VIABILITY / sizeof *VIABILITY);
                     json_t *o = jobj();
                     jobj_set(o, "word", jstr(l->v[order[i]].word));
                     jobj_set(o, "from", jstr(why[i]));
-                    jobj_set(o, ends ? "complete" : "coherence", mark && !ends ? jnull() : jf64(round(v * 1e4) / 1e4));
+                    jobj_set(o, ends ? "complete" : "coherence", jf64(round(v * 1e4) / 1e4));
                     jarr_push(vj, o);
                     if (!chosen && v >= (ends ? 0.5 : COHERENCE_FLOOR)) {
                         chosen = true;
