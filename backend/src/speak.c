@@ -307,6 +307,15 @@ char *render_words(const learner_t *l, char **w, size_t n)
         if (!strcmp(x, END))
             continue;
         if (is_punct(x)) {
+            /* a comma with nothing after it but a sentence's end is not
+             * written ("I,." when a reply ended after a comma) */
+            if (!strcmp(x, ",")) {
+                size_t j = i + 1;
+                while (j < n && !strcmp(w[j], END))
+                    j++;
+                if (j == n || sentence_end(w[j]) || !strcmp(w[j], ","))
+                    continue;
+            }
             sb_puts(&b, x);
             if (sentence_end(x))
                 cap = true;
