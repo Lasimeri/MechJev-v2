@@ -381,3 +381,23 @@ gates' own is tried. A mark or the end is not asked about. The trace keeps
 each word's coherence (`veto`) and how many were vetoed (`vetoed`); a word
 said after a veto is learned as the word, so the circuit learns from the
 engine's coherence without taking its choice.
+
+**The teacher's words, whole.** Word by word the gates could not hold a
+sentence of the teacher's words together (the day stage: "My." or "My day
+was." under a floor of 0.6; salad under 0.5), and the unknown stage, re-taught
+after a review, passed none of 7 taught turns. So when a taught turn's three
+tries are rejected, the teacher's shown words, in its order, are tried as
+whole replies, their beginnings shortest first ("I.", "I do.", "I do not.",
+"I do not know."), each judged as a turn is; the first accepted is said,
+generated so that its words are learned with what MechJev saw at each. A span
+a try said already is not judged again. On a copy of the learner at the
+unknown stage (12 steps): 5 of 7 taught turns passed ("I do not know.",
+"My day was good I talked with you.", the first day pass on any path), the
+checks "What Glip?" and "What Zorp?" passed, unknown was cleared; a taught
+turn took 161 s on average and up to 861 s, three learners sharing the
+engine.
+
+Measured over all ten stages passed (3 rounds of 2 lines each,
+`~/.cache/mechjev-v2-ab-broad/`, the learner as it was at 18:53): the gates
+44 of 60 right and 12 with the teacher's check under 0.1, the engine's
+choice 35 and 20.
